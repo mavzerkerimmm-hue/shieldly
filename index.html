@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Shieldly — Monitor your website. Automatically.</title>
-<meta name="description" content="Shieldly checks your website for downtime, SSL certificate problems, weak security headers and email spoofing risks — completely free.">
+<meta name="description" content="Shieldly checks your website for downtime, SSL certificate problems, weak security headers and email spoofing risks — all features for €4,99 per month.">
 <meta name="theme-color" content="#ffffff">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='0' y2='1'%3E%3Cstop offset='0' stop-color='%233b7bff'/%3E%3Cstop offset='1' stop-color='%231a47e0'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath d='M16 2 4 6.5v8.2C4 22.3 9.1 27.8 16 30c6.9-2.2 12-7.7 12-15.3V6.5z' fill='url(%23g)'/%3E%3Cpath d='m11 16 3.5 3.5L21.5 12' fill='none' stroke='white' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -3297,7 +3297,7 @@ function ring(score,size=132,th=11){
 function animateRings(root=document){requestAnimationFrame(()=>requestAnimationFrame(()=>$$('.ring-arc',root).forEach(c=>c.style.strokeDashoffset=c.dataset.off)))}
 
 async function submitRestorePro(f){const inp=$('#lic-key',f);const b=f.querySelector('[type=submit]');const v=inp.value.trim();if(!v)return setErr(inp,'Enter your license key (it starts with SHL-).');
-  btnLoad(b,true);try{const r=await api('POST','/billing/restore',{licenseKey:v});await refreshMe();toast(r.isPro?'Shieldly Pro is active':'License linked',r.isPro?'Pro is now on for this browser.':'This subscription is not active right now.',r.isPro?'success':'info');renderPage(true)}catch(e){btnLoad(b,false);setErr(inp,e.message)}}
+  btnLoad(b,true);try{const r=await api('POST','/billing/restore',{licenseKey:v});await refreshMe();toast(r.isPro?'Your subscription is active':'License linked',r.isPro?'Shieldly is now unlocked in this browser.':'This subscription is not active right now.',r.isPro?'success':'info');if(r.isPro)return go(hasSites()?'#/app/overview':'#/onboarding');renderPage(true)}catch(e){btnLoad(b,false);setErr(inp,e.message)}}
 /* ================= Shieldly local engine =================
    Runs entirely in the browser: accounts, storage and REAL checks.
    Data lives in localStorage on this device. Checks use:
@@ -3308,7 +3308,7 @@ async function submitRestorePro(f){const inp=$('#lic-key',f);const b=f.querySele
 =========================================================== */
 const LOCAL=(function(){
 const KEY='shieldly.local.v1';
-const CREDIT_LIMIT=50000,SITE_LIMIT=3,SCAN_EVERY_MS=6*3600*1000;
+const CREDIT_LIMIT=50000,SITE_LIMIT=5,SCAN_EVERY_MS=6*3600*1000;
 const COST={uptime:1,scan:10};
 const PRO_SCAN_EVERY_MS=3600*1000,PRO_PRICE='4.99';
 const SERVER=(function(){let v=String(window.SHIELDLY_SERVER||'').trim();if(v==='auto')v=/^https?:$/.test(location.protocol)?location.origin:'';return v.replace(/\/+$/,'')})();
@@ -3326,10 +3326,25 @@ function applyLicense(u,st,key){
   const was=isPro(u);
   u.pro={...(u.pro||{}),key:key||(u.pro&&u.pro.key),subId:st.subscriptionId||(u.pro&&u.pro.subId)||null,status:st.status||null,proUntil:st.proUntil||null,nextBillingTime:st.nextBillingTime||null,checkedAt:nowIso(),env:st.env||(u.pro&&u.pro.env)||'sandbox'};
   const now=isPro(u);
-  if(!was&&now)logEvent(u,null,'billing','info','Shieldly Pro is active','Thank you for upgrading! 1-minute checks and hourly security scans are now available.');
-  if(was&&!now)logEvent(u,null,'billing','medium','Shieldly Pro has ended',u.pro.status==='SUSPENDED'?'PayPal could not collect the payment. Your account is back on Free.':'Your account is back on the Free plan.');
+  if(!was&&now)logEvent(u,null,'billing','info','Your Shieldly subscription is active','Thank you! Monitoring is now switched on for your account.');
+  if(was&&!now)logEvent(u,null,'billing','medium','Your Shieldly subscription has ended',u.pro.status==='SUSPENDED'?'PayPal could not collect the payment. Monitoring is paused until the payment succeeds.':'Monitoring is paused. Subscribe again under Plan to continue.');
   save();
 }
+// ----- 24/7 monitoring on the Shieldly server -----
+function monPayload(u){const st={...DEFAULT_SETTINGS,...(u.settings||{})};return {email:u.email,alerts:!!(st.emailAlerts&&st.downtimeAlerts),
+  sites:u.sites.map(s=>{const c={...DEFAULT_CHECKS,...s.checks};return {id:s.id,domain:s.domain,apiUrl:c.api&&s.apiUrl?s.apiUrl:null,active:s.status==='active'&&c.uptime!==false,intervalMin:s.intervalMin}})}}
+async function pushSites(u,force){const body=monPayload(u);const sig=JSON.stringify(body);
+  if(!force&&u.pro.monSig===sig&&u.pro.monPushAt&&Date.now()-Date.parse(u.pro.monPushAt)<30*60000)return;
+  await server('/sites',{licenseKey:u.pro.key,...body});DB=load();const x=DB.users[u.email];if(!x||!x.pro)return;x.pro.monSig=sig;x.pro.monPushAt=nowIso();save()}
+async function pullResults(u){
+  const d=await server('/monitor',{licenseKey:u.pro.key,since:u.pro.monSince||null});
+  DB=load();u=DB.users[u.email];if(!u||!u.pro)return;
+  const all=[];for(const [id,v] of Object.entries(d.sites||{}))for(const r of (v.results||[]))all.push({id,...r});
+  all.sort((a,b)=>Date.parse(a.ts)-Date.parse(b.ts));let last=u.pro.monSince||null;
+  for(const r of all){const site=u.sites.find(s=>s.id===r.id);if(site){const rr={ok:r.ok,ms:r.ms,status:r.code,error:r.error};addCheck(u,site,r.target,rr,r.ts);await transition(u,site,r.target,rr);if(!site.lastCheckedAt||Date.parse(r.ts)>Date.parse(site.lastCheckedAt))site.lastCheckedAt=r.ts}
+    if(!last||Date.parse(r.ts)>Date.parse(last))last=r.ts}
+  u.pro.monSince=last;u.pro.monOkAt=nowIso();save()}
+const serverMonitoring=u=>!!(u&&u.pro&&u.pro.monOkAt&&Date.now()-Date.parse(u.pro.monOkAt)<15*60000);
 async function syncLicense(u,{subscriptionId=null}={}){if(!u.pro||!u.pro.key)return;const st=await server('/status',{licenseKey:u.pro.key,subscriptionId,refresh:true});if(st.found)applyLicense(u,st)}
 async function billingState(u){const p=u.pro||{};return {configured:await serverEnabled(),isPro:isPro(u),price:PRO_PRICE,env:p.env||'sandbox',
   pro:p.key?{status:p.status,proUntil:p.proUntil,nextBillingTime:p.nextBillingTime,subscriptionId:p.subId,checkedAt:p.checkedAt,licenseKey:p.key}:null}}
@@ -3387,9 +3402,9 @@ function normApi(v){let u=str(v,500);if(!u)return null;if(!/^https?:\/\//i.test(
 function cleanChecks(o){const out={...DEFAULT_CHECKS};if(o&&typeof o==='object')for(const k of Object.keys(DEFAULT_CHECKS))if(k in o)out[k]=!!o[k];return out}
 function credits(u){const used=u.creditsMonth===month()?u.creditsUsed:0;return {limit:CREDIT_LIMIT,used,remaining:CREDIT_LIMIT-used}}
 function useCredits(u,n){return true;if(u.creditsMonth!==month()){u.creditsMonth=month();u.creditsUsed=0}if(u.creditsUsed+n>CREDIT_LIMIT)return false;u.creditsUsed+=n;return true}
-function publicUser(u){return {id:u.id,name:u.name,email:u.email,emailVerified:true,twofa:!!u.totpEnabled,settings:{...DEFAULT_SETTINGS,...(u.settings||{})},credits:credits(u),createdAt:u.createdAt,siteLimit:SITE_LIMIT,plan:isPro(u)?'pro':'free',proUntil:isPro(u)?u.pro.proUntil:null}}
+function publicUser(u){return {serverMonitoring:serverMonitoring(u),id:u.id,name:u.name,email:u.email,emailVerified:true,twofa:!!u.totpEnabled,settings:{...DEFAULT_SETTINGS,...(u.settings||{})},credits:credits(u),createdAt:u.createdAt,siteLimit:SITE_LIMIT,plan:isPro(u)?'pro':'free',proUntil:isPro(u)?u.pro.proUntil:null}}
 function logEvent(u,site,type,severity,title,detail){u.events.unshift({id:rid(),siteId:site?site.id:null,domain:site?site.domain:null,ts:nowIso(),type,severity,title,detail:detail||null});if(u.events.length>MAX_EVENTS)u.events.length=MAX_EVENTS}
-function addCheck(u,site,target,r){u.checks.push({ts:nowIso(),siteId:site.id,target,ok:r.ok,status_code:r.status||null,response_ms:r.ms,error:r.error||null});if(u.checks.length>MAX_CHECKS)u.checks.splice(0,u.checks.length-MAX_CHECKS)}
+function addCheck(u,site,target,r,ts){u.checks.push({ts:ts||nowIso(),siteId:site.id,target,ok:r.ok,status_code:r.status||null,response_ms:r.ms,error:r.error||null});if(u.checks.length>MAX_CHECKS)u.checks.splice(0,u.checks.length-MAX_CHECKS)}
 function publicSite(u,s){
   const since=Date.now()-86400000;const cs=u.checks.filter(c=>c.siteId===s.id&&c.target==='site'&&Date.parse(c.ts)>since);
   const okc=cs.filter(c=>c.ok);const open=u.findings.filter(f=>f.siteId===s.id&&!f.resolvedAt);
@@ -3546,10 +3561,11 @@ function isLeader(){try{const l=JSON.parse(localStorage.getItem('shieldly.leader
 async function tick(){
   if(running)return;DB=load();const u0=cur();if(!u0||!isLeader())return;running=true;
   try{
-    const sites=u0.sites.filter(s=>s.status==='active');
+    if(isPro(u0)&&SERVER&&u0.pro&&u0.pro.key){try{await pushSites(u0);if(!u0.pro.monPullAt||Date.now()-u0.pro.monPullAt>55000){u0.pro.monPullAt=Date.now();await pullResults(u0)}}catch(e){}DB=load()}
+    const sites=isPro(u0)&&!serverMonitoring(cur())?u0.sites.filter(s=>s.status==='active'):[];
     for(const s of sites){if(!s.lastCheckedAt||Date.now()-Date.parse(s.lastCheckedAt)>=effInterval(u0,s)*60000-5000){await runUptime(u0,s)}}
-    const u1=cur();if(u1){const due=u1.sites.find(s=>s.status==='active'&&s.lastScanAt&&Date.now()-Date.parse(s.lastScanAt)>=(isPro(u1)?PRO_SCAN_EVERY_MS:SCAN_EVERY_MS));if(due)await runScan(u1,due,false)}
-    const u3=cur();if(u3&&u3.pro&&u3.pro.key&&SERVER&&(!u3.pro.checkedAt||Date.now()-Date.parse(u3.pro.checkedAt)>6*3600*1000)){try{await syncLicense(u3)}catch(e){}}
+    const u1=cur();if(u1){const due=!isPro(u1)?null:u1.sites.find(s=>s.status==='active'&&s.lastScanAt&&Date.now()-Date.parse(s.lastScanAt)>=(isPro(u1)?PRO_SCAN_EVERY_MS:SCAN_EVERY_MS));if(due)await runScan(u1,due,false)}
+    const u3=cur();if(u3&&u3.pro&&u3.pro.key&&SERVER&&(!u3.pro.checkedAt||Date.now()-Date.parse(u3.pro.checkedAt)>30*60*1000)){try{await syncLicense(u3)}catch(e){}}
     const u2=cur();if(u2){const cut=Date.now()-35*86400000;const n=u2.checks.length;u2.checks=u2.checks.filter(c=>Date.parse(c.ts)>cut);if(n!==u2.checks.length)save()}
   }catch(e){console.error('[shieldly monitor]',e)}finally{running=false}
 }
@@ -3611,12 +3627,13 @@ async function handle(method,path,body){
   if(p==='/billing/cancel'){const u=requireUser();if(!u.pro||!u.pro.key)throw bad('You have no Pro subscription.');const st=await server('/cancel',{licenseKey:u.pro.key});applyLicense(u,st);return billingState(u)}
   if(p==='/billing/restore'){const u=requireUser();const key=str(body.licenseKey,80);if(!/^SHL-[A-Za-z0-9_-]{43}$/.test(key))throw bad('That is not a valid Shieldly license key. It starts with SHL-.');
     const st=await server('/status',{licenseKey:key,refresh:true});if(!st.found)throw bad('No Pro subscription was found for this license key.');applyLicense(u,st,key);return billingState(u)}
+  if(p.startsWith('/sites')&&method!=='GET'&&method!=='DELETE'){const u=requireUser();if(!isPro(u))throw new E(402,'An active Shieldly subscription is required. Subscribe under Plan to start monitoring.')}
   if(p==='/sites'&&method==='GET'){const u=requireUser();return {sites:u.sites.map(s=>publicSite(u,s)),limit:SITE_LIMIT}}
-  if(p==='/sites'&&method==='POST'){const u=requireUser();const domain=cleanD(body.domain);
+  if(p==='/sites'&&method==='POST'){const u=requireUser();if(u.sites.length>=SITE_LIMIT)throw bad(`You can monitor up to ${SITE_LIMIT} websites. Remove a website to add another one.`);const domain=cleanD(body.domain);
     if(!domain)throw bad('Please enter your website domain.');if(!isDom(domain))throw bad('That doesn’t look like a valid domain. Try something like example.com');
     const apiUrl=normApi(body.apiUrl);
     if(u.sites.some(s=>s.domain===domain))throw new E(409,'This website is already in your account.');
-    const s={id:rid(),domain,apiUrl,reason:str(body.reason,1000)||null,status:'active',checks:cleanChecks(body.checks),intervalMin:5,health:'unknown',apiHealth:'unknown',failCount:0,apiFailCount:0,score:null,lastCheckedAt:null,lastScanAt:null,createdAt:nowIso()};
+    const s={id:rid(),domain,apiUrl,reason:str(body.reason,1000)||null,status:'active',checks:cleanChecks(body.checks),intervalMin:1,health:'unknown',apiHealth:'unknown',failCount:0,apiFailCount:0,score:null,lastCheckedAt:null,lastScanAt:null,createdAt:nowIso()};
     u.sites.push(s);logEvent(u,s,'site_added','info','Website added','Shieldly will start checking this website.');save();return {site:publicSite(u,s)}}
   if(seg[0]==='sites'&&seg[1]){
     const u=requireUser();const s=getSite(u,seg[1]);const act=seg[2];
@@ -3674,16 +3691,18 @@ const root=$('#root');
 function go(h){if(location.hash===h)render();else location.hash=h}
 function route(){const h=location.hash.replace(/^#\/?/,'');const parts=h.split('/');return {a:parts[0]||'',b:parts[1]||'',c:parts[2]||''}}
 const hasSites=()=>S.sites&&S.sites.length>0;
+const paid=()=>!!(S.user&&S.user.plan==='pro');
 async function render(){
+  if(S.user)await refreshMe();
   const {a,b,c}=route();const u=S.user;
   closeMenus();stopPoll();
   if(a==='signup'||a==='login'||a==='forgot'){if(u)return go(hasSites()?'#/app/overview':'#/onboarding');return mount({signup:pageSignup,login:pageLogin,forgot:pageForgot}[a])}
   if(a==='twofa')return mount(pageTwofa);
   if(a==='reset')return mount(()=>pageReset(b));
   if(a==='verify-email')return mount(()=>pageVerifyEmail(b));
-  if(a==='onboarding'){if(!u)return go('#/signup');return mount(pageOnboarding)}
-  if(a==='activate'){if(!u)return go('#/login');return mount(()=>pageActivate(b))}
-  if(a==='app'){if(!u)return go('#/login');if(!hasSites()&&!lsGet('shieldly.skipOnb',false))return go('#/onboarding');return renderApp(b||'overview',c)}
+  if(a==='onboarding'){if(!u)return go('#/signup');if(!paid())return go('#/app/plan');return mount(pageOnboarding)}
+  if(a==='activate'){if(!u)return go('#/login');if(!paid())return go('#/app/plan');return mount(()=>pageActivate(b))}
+  if(a==='app'){if(!u)return go('#/login');if(!paid()){if(!['plan','settings'].includes(b))return go('#/app/plan');return renderApp(b,c)}if(!hasSites()&&!lsGet('shieldly.skipOnb',false)&&!['plan','settings'].includes(b))return go('#/onboarding');return renderApp(b||'overview',c)}
   if(a==='pricing')return mount(()=>marketing(pagePricing()),true);
   if(a==='about')return mount(()=>marketing(pageAbout()),true);
   if(a==='contact')return mount(()=>marketing(pageContact()),true);
@@ -3706,15 +3725,15 @@ window.addEventListener('scroll',()=>{const n=$('.nav');if(n)n.classList.toggle(
 function marketing(inner){
   const {a}=route();const u=S.user;const home=hasSites()?'#/app/overview':'#/onboarding';
   const right=u?`<button class="btn btn-primary hide-m" data-go="${home}">Open dashboard ${I('arrowRight',16)}</button>`
-    :`<button class="btn btn-ghost hide-m" data-go="#/login">Log in</button><button class="btn btn-primary hide-m" data-go="#/signup">Get Started Free</button>`;
+    :`<button class="btn btn-ghost hide-m" data-go="#/login">Log in</button><button class="btn btn-primary hide-m" data-go="#/signup">Get Started</button>`;
   return `<header class="nav"><div class="container nav-in">${logo()}<nav class="nav-links"><a data-go="#/" class="${a===''?'active':''}">Home</a><a data-go="#/pricing" class="${a==='pricing'?'active':''}">Pricing</a><a data-go="#/about" class="${a==='about'?'active':''}">About</a><a data-go="#/contact" class="${a==='contact'?'active':''}">Contact</a></nav>
   <div class="nav-right">${right}<button class="btn btn-ghost btn-icon nav-burger" data-action="toggleNav" aria-label="Menu">${I('menu',20)}</button></div></div>
-  <div class="mnav"><a data-go="#/">Home ${I('chevRight',16)}</a><a data-go="#/pricing">Pricing ${I('chevRight',16)}</a><a data-go="#/about">About ${I('chevRight',16)}</a><a data-go="#/contact">Contact ${I('chevRight',16)}</a>${u?`<button class="btn btn-primary btn-lg btn-block" data-go="${home}">Open dashboard</button>`:`<a data-go="#/login">Log in ${I('chevRight',16)}</a><button class="btn btn-primary btn-lg btn-block" data-go="#/signup">Get Started Free</button>`}</div></header>
+  <div class="mnav"><a data-go="#/">Home ${I('chevRight',16)}</a><a data-go="#/pricing">Pricing ${I('chevRight',16)}</a><a data-go="#/about">About ${I('chevRight',16)}</a><a data-go="#/contact">Contact ${I('chevRight',16)}</a>${u?`<button class="btn btn-primary btn-lg btn-block" data-go="${home}">Open dashboard</button>`:`<a data-go="#/login">Log in ${I('chevRight',16)}</a><button class="btn btn-primary btn-lg btn-block" data-go="#/signup">Get Started</button>`}</div></header>
   <main>${inner}</main>
-  <footer class="footer"><div class="container"><div class="footer-grid"><div>${logo(24)}<p class="muted" style="margin-top:12px;max-width:340px;font-size:14px">Monitor your website. Automatically. Free website monitoring. Optional Pro for €4,99 per month.</p></div>
+  <footer class="footer"><div class="container"><div class="footer-grid"><div>${logo(24)}<p class="muted" style="margin-top:12px;max-width:340px;font-size:14px">Monitor your website. Automatically. All features for €4,99 per month.</p></div>
   <div><h5>Product</h5><a data-go="#/">Home</a><a data-action="scrollTo" data-target="s-how">How it works</a><a data-action="scrollTo" data-target="s-features">Features</a><a data-go="#/pricing">Pricing</a></div>
   <div><h5>Company</h5><a data-go="#/about">About us</a><a data-go="#/contact">Contact</a><a data-go="#/privacy">Privacy policy</a><a data-go="#/terms">Terms of use</a></div></div>
-  <div class="footer-bottom"><span>© ${new Date().getFullYear()} Shieldly. Free forever.</span><span class="live">Monitoring active</span></div></div></footer>`;
+  <div class="footer-bottom"><span>© ${new Date().getFullYear()} Shieldly. €4,99 per month · cancel any time.</span><span class="live">Monitoring active</span></div></div></footer>`;
 }
 function previewHTML(){
   let v=60,s=7;const r=()=>{s=(s*9301+49297)%233280;return s/233280};const pts=[];for(let i=0;i<24;i++){v=clamp(v+(r()-.5)*16,25,95);pts.push([i*(400/23),120-v])}
@@ -3723,7 +3742,7 @@ function previewHTML(){
   return `<div class="preview-wrap reveal"><div class="preview"><div class="pv-top"><div class="pv-dots"><i></i><i></i><i></i></div><div class="pv-url">${I('lock',11)} shieldly.html</div><span class="live" style="font-size:11.5px">Live</span></div>
   <div class="pv-body"><aside class="pv-side">${logo(20)}<div class="pv-nav"><div class="on">${I('grid',15)}Overview</div><div>${I('globe',15)}Websites</div><div>${I('shield',15)}Monitoring</div><div>${I('activity',15)}Activity</div><div>${I('chart',15)}Analytics</div><div>${I('settings',15)}Settings</div></div></aside>
   <div class="pv-main"><div class="pv-status"><div class="sh">${I('shieldCheck',19)}</div><div><b>example.com</b><small>Website status</small></div><span class="status-pill on" style="margin-left:auto">Online</span></div>
-  <div class="pv-stats"><div class="pv-stat"><div class="l">${I('activity',13)}Uptime (30 days)</div><div class="v">99.98%</div><div class="d">Checked every 5 minutes</div></div>
+  <div class="pv-stats"><div class="pv-stat"><div class="l">${I('activity',13)}Uptime (30 days)</div><div class="v">99.98%</div><div class="d">Checked every minute</div></div>
   <div class="pv-stat"><div class="l">${I('clock',13)}Response time</div><div class="v">184 <small>ms</small></div><div class="d">↓ 12% vs last week</div></div>
   <div class="pv-stat"><div class="l">${I('gauge',13)}Security score</div><div class="v">94 <small>/ 100</small></div><div class="meter" style="margin-top:8px"><i style="width:94%"></i></div></div></div>
   <div class="pv-grid"><div class="pv-card"><h4>Response time <span>Last 24h</span></h4><svg class="pv-chart" viewBox="0 0 400 120" preserveAspectRatio="none" width="100%"><defs><linearGradient id="pvg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2563ff" stop-opacity=".22"/><stop offset="1" stop-color="#2563ff" stop-opacity="0"/></linearGradient></defs><path d="${d} L400,120 L0,120 Z" fill="url(#pvg)"/><path d="${d}" fill="none" stroke="#2563ff" stroke-width="2" vector-effect="non-scaling-stroke"/></svg></div>
@@ -3733,20 +3752,20 @@ function previewHTML(){
 function pageHome(){
   const feats=[['target','Threat Detection','Spots weak security headers, email spoofing risks (SPF/DMARC), missing DNSSEC and CAA records.'],
     ['zap','Automated Scans','A full security scan runs automatically every 6 hours while Shieldly is open — no setup needed.'],
-    ['monitor','Website Monitoring','Uptime checks every 5 minutes with response times and instant down alerts, while Shieldly is open.'],
+    ['monitor','Website Monitoring','Uptime checks every minute, day and night — also when your computer is off. You get an email the moment your site goes down.'],
     ['code','API Monitoring','Keeps an eye on your API endpoint’s availability and HTTPS.'],
     ['list','Activity Logs','A searchable, exportable timeline of every issue, outage and fix.'],
     ['gauge','Security Score','One clear score out of 100, with a practical fix for every issue.'],
-    ['bell','Real-Time Alerts','Desktop notifications when your site goes down, a certificate expires or a new issue appears.'],
+    ['bell','Real-Time Alerts','Email alerts when your site goes down and when it is back, plus desktop notifications for new issues.'],
     ['layers','Multiple Websites','Add as many websites as you like and monitor them all from one dashboard.']];
   return `<section class="hero"><div class="hero-bg"></div><div class="hero-glow"></div><div class="container hero-in">
-  <a class="pill" data-go="#/pricing"><b>Free forever</b>Every feature, no credit card ${I('arrowRight',14)}</a>
+  <a class="pill" data-go="#/pricing"><b>€4,99 / month</b>Every feature included ${I('arrowRight',14)}</a>
   <h1>Website monitoring, <span class="grad">without the complexity.</span></h1>
-  <p class="lead">Shieldly checks your website for downtime, SSL certificate problems, weak security headers and email spoofing risks — and alerts you before attackers or customers notice. Completely free.</p>
-  <div class="hero-cta"><button class="btn btn-primary btn-lg" data-go="#/signup">Get Started Free ${I('arrowRight',17)}</button><button class="btn btn-secondary btn-lg" data-action="scrollTo" data-target="s-how">See How It Works</button></div>
-  <div class="trust"><span>${I('check',15,2.4)}Free forever</span><span>${I('check',15,2.4)}Setup in minutes</span><span>${I('check',15,2.4)}No credit card required</span></div>
+  <p class="lead">Shieldly checks your website for downtime, SSL certificate problems, weak security headers and email spoofing risks — and alerts you before attackers or customers notice. All for €4,99 per month.</p>
+  <div class="hero-cta"><button class="btn btn-primary btn-lg" data-go="#/signup">Get Started ${I('arrowRight',17)}</button><button class="btn btn-secondary btn-lg" data-action="scrollTo" data-target="s-how">See How It Works</button></div>
+  <div class="trust"><span>${I('check',15,2.4)}€4,99 per month</span><span>${I('check',15,2.4)}Setup in minutes</span><span>${I('check',15,2.4)}Cancel any time</span></div>
   ${previewHTML()}
-  <div class="stats-strip reveal"><div><b>Unlimited</b><span>websites per account</span></div><div><b>Every 5 min</b><span>uptime checks while open</span></div><div><b>10+ checks</b><span>in every security scan</span></div><div><b>€0</b><span>forever — Pro is optional</span></div></div>
+  <div class="stats-strip reveal"><div><b>5</b><span>websites per account</span></div><div><b>24/7</b><span>uptime checks every minute</span></div><div><b>10+ checks</b><span>in every security scan</span></div><div><b>€4,99</b><span>per month · cancel any time</span></div></div>
   </div></section>
   <section class="section" id="s-how"><div class="container"><div class="center reveal"><span class="eyebrow">${I('sparkle',14)}How it works</span><h2 class="h2">Monitoring in 3 simple steps</h2><p class="sub">Nothing to install on your server — just open Shieldly in your browser. Go from zero to monitored in a few minutes.</p></div>
   <div class="steps">
@@ -3754,46 +3773,44 @@ function pageHome(){
    <div class="step reveal"><span class="num">02</span><h3>Choose your checks</h3><p>Add your website API and choose which checks Shieldly should run.</p><div class="step-vis"><div class="fake-input">${I('link',14)}https://api.example.com</div><div class="chips"><span class="chip-s on">${I('check',11,3)}Uptime</span><span class="chip-s on">${I('check',11,3)}SSL</span><span class="chip-s on">${I('check',11,3)}Headers</span><span class="chip-s">DNS</span></div></div></div>
    <div class="step reveal"><span class="num">03</span><h3>Stay informed</h3><p>Shieldly monitors your website while it’s open and alerts you the moment something is wrong.</p><div class="step-vis"><div style="display:flex;align-items:center;gap:10px;background:#fff;border:1px solid var(--border);border-radius:10px;padding:10px 12px"><span style="color:var(--green2)">${I('shieldCheck',20)}</span><div style="flex:1;font-size:13px"><b>example.com</b><div class="muted" style="font-size:12px">Score 94 / 100</div></div><span class="status-pill on">Active</span></div><div style="display:flex;align-items:center;gap:8px;font-size:12px" class="muted"><span class="dot medium"></span>Alert: SSL expires in 14 days<span style="margin-left:auto">now</span></div></div></div>
   </div></div></section>
-  <section class="section" id="s-features" style="padding-top:0"><div class="container"><div class="center reveal"><span class="eyebrow">${I('shield',14)}Features</span><h2 class="h2">Everything you need to keep an eye on your website.</h2><p class="sub">A complete security monitoring toolkit for website owners — included for free, with no feature gates.</p></div>
+  <section class="section" id="s-features" style="padding-top:0"><div class="container"><div class="center reveal"><span class="eyebrow">${I('shield',14)}Features</span><h2 class="h2">Everything you need to keep an eye on your website.</h2><p class="sub">A complete security monitoring toolkit for website owners — every feature included in one simple plan.</p></div>
   <div class="features">${feats.map(f=>`<div class="feature reveal"><div class="f-ic">${I(f[0],20)}</div><h3>${f[1]}</h3><p>${f[2]}</p></div>`).join('')}</div></div></section>
   <section class="section" style="padding-top:0"><div class="container"><div class="grid g2 reveal" style="gap:16px">
    <div class="card" style="padding:28px"><span class="stat-ic green">${I('check',18,2.4)}</span><h3 style="font-size:18px;margin-top:14px;letter-spacing:-.02em">What Shieldly does</h3><ul style="margin:12px 0 0 18px;color:var(--fg2);line-height:1.9;font-size:15px"><li>Checks if your website and API are online</li><li>Warns before your SSL certificate expires</li><li>Grades your security headers</li><li>Finds email spoofing risks (SPF, DMARC) and DNS weaknesses</li><li>Tells you exactly how to fix each problem</li></ul></div>
-   <div class="card" style="padding:28px"><span class="stat-ic red">${I('x',18,2.4)}</span><h3 style="font-size:18px;margin-top:14px;letter-spacing:-.02em">What Shieldly doesn’t do</h3><ul style="margin:12px 0 0 18px;color:var(--fg2);line-height:1.9;font-size:15px"><li>It does not block hackers, bots or attacks</li><li>It does not sit between your visitors and your website</li><li>It only checks while Shieldly is open in your browser</li></ul><p class="muted" style="margin-top:12px;font-size:14px">To actively block attacks, use a firewall such as Cloudflare or a security plugin for your website — and use Shieldly to check that everything is set up well.</p></div>
+   <div class="card" style="padding:28px"><span class="stat-ic red">${I('x',18,2.4)}</span><h3 style="font-size:18px;margin-top:14px;letter-spacing:-.02em">What Shieldly doesn’t do</h3><ul style="margin:12px 0 0 18px;color:var(--fg2);line-height:1.9;font-size:15px"><li>It does not block hackers, bots or attacks</li><li>It does not sit between your visitors and your website</li><li>Security scans (SSL, headers, DNS) run when you open Shieldly — uptime is checked 24/7</li></ul><p class="muted" style="margin-top:12px;font-size:14px">To actively block attacks, use a firewall such as Cloudflare or a security plugin for your website — and use Shieldly to check that everything is set up well.</p></div>
   </div></div></section>
-  <section class="container reveal"><div class="cta-band"><h2>Know about problems before your visitors do.<br>It takes minutes, and it's free.</h2><p>Free forever · Setup in minutes · No credit card required</p><button class="btn btn-primary btn-lg" data-go="#/signup">Get Started Free ${I('arrowRight',17,2)}</button></div></section>`;
+  <section class="container reveal"><div class="cta-band"><h2>Know about problems before your visitors do.<br>It takes minutes to set up.</h2><p>€4,99 per month · Setup in minutes · Cancel any time</p><button class="btn btn-primary btn-lg" data-go="#/signup">Get Started ${I('arrowRight',17,2)}</button></div></section>`;
 }
 function pagePricing(){
-  const free=['Unlimited websites','No credits or usage limits','Uptime checks every 5 min','Full security scan every 6 hours','SSL certificate monitoring','Security header grade','DNS & email security','API monitoring','Activity logs & analytics','No credit card required'];
-  const pro=['Everything in Free','Uptime checks every minute','Full security scan every hour','Supports the development of Shieldly','Cancel any time'];
-  const faq=[['Is the Free plan really free?','Yes. Shieldly Free costs nothing, forever. You get unlimited websites and you never need a credit card.'],
-    ['How does Pro billing work?','Pro costs €4,99 per month and is billed through PayPal. Your subscription renews every month until you cancel it — you can cancel any time in Shieldly under Plan, and you keep Pro until the end of the period you paid for.'],
-    ['How is my payment verified?','The Shieldly server checks your subscription directly with PayPal. Pro is only switched on after PayPal confirms that the subscription is active. Shieldly never sees your card or bank details.'],
-    ['I use Shieldly on another computer. Do I pay twice?','No. After upgrading you get a license key under Plan. Enter it under Plan on your other computer or browser to use Pro there too.'],
+  const inc=['Up to 5 websites','Uptime checks every minute, 24/7','Email alerts when a site goes down','Full security scan every hour while Shieldly is open','SSL certificate monitoring','Security header grade','DNS & email security','API monitoring','Activity logs & analytics','Desktop alerts','Cancel any time'];
+  const faq=[['How much does Shieldly cost?','Shieldly costs €4,99 per month. Every feature is included — there are no other plans or hidden costs.'],
+    ['How does billing work?','You pay through PayPal. Your subscription renews every month until you cancel it — you can cancel any time in Shieldly under Plan, and you keep access until the end of the period you paid for.'],
+    ['Is there a free trial?','No. You create an account, subscribe for €4,99 per month and can start monitoring right away. You can cancel at any time.'],
+    ['How is my payment verified?','The Shieldly server checks your subscription directly with PayPal. Shieldly is only unlocked after PayPal confirms that the subscription is active. Shieldly never sees your card or bank details.'],
+    ['I use Shieldly on another computer. Do I pay twice?','No. After subscribing you get a license key under Plan. Enter it under Plan on your other computer or browser to use your subscription there too.'],
     ['Does Shieldly block attacks?','No. Shieldly monitors your website from the outside: it finds weaknesses, misconfigurations and outages and tells you exactly how to fix them. It does not sit in front of your traffic, so it never slows your site down.'],
-    ['Does Shieldly run all the time?','Shieldly runs in your browser: it checks your websites while Shieldly is open in a tab (a pinned tab works great). When you close it, checks pause and continue when you open it again.'],
-    ['Where is my data stored?','Your account, websites and history are stored in your own browser on this device. For Pro, only a license key and your PayPal subscription status are stored on the Shieldly server — never your websites or results.']];
-  const card=(name,badge,price,desc,items,btn,hl)=>`<div class="price-card" style="text-align:left;max-width:440px;flex:1 1 300px;margin:0;${hl?'':'box-shadow:var(--sh2)'}"><div style="display:flex;justify-content:space-between;align-items:center;gap:12px"><div style="display:flex;align-items:center;gap:10px">${shieldMark(30)}<b style="font-size:18px;letter-spacing:-.02em">${name}</b></div><span class="badge">${I('sparkle',12)}${badge}</span></div>
-   <div class="price"><b>${price}</b><span>/ month</span></div><p class="muted" style="margin-top:8px;font-size:14.5px">${desc}</p>
-   <ul class="checklist" style="grid-template-columns:1fr">${items.map(i=>`<li>${I('check',16,3)}<span>${i}</span></li>`).join('')}</ul>${btn}</div>`;
+    ['Does Shieldly run all the time?','Yes. Shieldly’s servers check whether your websites and APIs are online every minute, day and night — also when your computer is off. When a site goes down you get an email, and another one when it is back. The full security scans (SSL, headers, DNS) run while you have Shieldly open.']];
   return `<section class="hero" style="padding-bottom:0"><div class="hero-bg"></div><div class="hero-glow"></div><div class="container hero-in">
-  <span class="eyebrow">${I('heart',14)}Pricing</span><h1 style="font-size:clamp(36px,6vw,64px);margin-top:14px">Simple pricing.<br><span class="grad">Free forever.</span></h1>
-  <p class="lead">Use Shieldly for free with unlimited websites. Upgrade to Pro when you want faster checks.</p>
-  <div style="display:flex;gap:20px;justify-content:center;flex-wrap:wrap;margin-top:56px">
-   ${card('Shieldly Free','Free forever','€0','Everything you need to monitor your websites.',free,`<button class="btn btn-secondary btn-lg btn-block" data-go="${S.user?'#/app/overview':'#/signup'}">Get Started Free</button>`,false)}
-   ${card('Shieldly Pro','Optional','€4,99','For developers who want to know about problems faster.',pro,`<button class="btn btn-primary btn-lg btn-block" data-go="${S.user?'#/app/plan':'#/signup'}">Upgrade to Pro ${I('arrowRight',17,2)}</button><p class="muted" style="text-align:center;font-size:13px;margin-top:12px">Billed monthly via PayPal · Cancel any time</p>`,true)}
-  </div></div></section>
+  <span class="eyebrow">${I('heart',14)}Pricing</span><h1 style="font-size:clamp(36px,6vw,64px);margin-top:14px">One simple plan.<br><span class="grad">Everything included.</span></h1>
+  <p class="lead">All Shieldly features for one low monthly price. Cancel any time.</p>
+  <div class="price-wrap"><div class="price-card" style="text-align:left;margin:0 auto"><div style="display:flex;justify-content:space-between;align-items:center;gap:12px"><div style="display:flex;align-items:center;gap:10px">${shieldMark(30)}<b style="font-size:18px;letter-spacing:-.02em">Shieldly</b></div><span class="badge">${I('sparkle',12)}All features</span></div>
+  <div class="price"><b>€4,99</b><span>/ month</span></div><p class="muted" style="margin-top:8px;font-size:14.5px">Everything you need to monitor your websites.</p>
+  <ul class="checklist">${inc.map(i=>`<li>${I('check',16,3)}<span>${i}</span></li>`).join('')}</ul>
+  <button class="btn btn-primary btn-lg btn-block" data-go="${S.user?'#/app/plan':'#/signup'}">Get Started ${I('arrowRight',17,2)}</button>
+  <p class="muted" style="text-align:center;font-size:13px;margin-top:12px">Billed monthly via PayPal · Cancel any time</p></div></div>
+  </div></section>
   <section class="container"><div class="faq reveal"><h2 class="h2" style="font-size:32px;text-align:center;margin-bottom:24px">Questions & answers</h2>${faq.map((f,i)=>`<div class="faq-item ${i===0?'open':''}"><button class="faq-q" data-action="faq">${f[0]}${I('plus',18)}</button><div class="faq-a"><div>${f[1]}</div></div></div>`).join('')}</div></section>`;
 }
 const CONTACT_URL='https://payhip.com/u1783987120443822163040';
 function pageAbout(){return `<section class="hero" style="padding-bottom:0"><div class="hero-bg"></div><div class="hero-glow"></div><div class="container hero-in">
-  <span class="eyebrow">${I('users',14)}About us</span><h1 style="font-size:clamp(36px,6vw,60px);margin-top:14px">Website monitoring,<br><span class="grad">made simple and free.</span></h1>
+  <span class="eyebrow">${I('users',14)}About us</span><h1 style="font-size:clamp(36px,6vw,60px);margin-top:14px">Website monitoring,<br><span class="grad">made simple.</span></h1>
   <p class="lead">Shieldly helps website owners spot downtime, SSL certificate problems, weak security headers and email spoofing risks — before they turn into real problems.</p></div></section>
   <section class="container"><div class="page" style="padding-top:56px">
-  <div class="card" style="padding:28px;display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap"><div class="avatar" style="width:56px;height:56px;font-size:18px">ND</div><div style="flex:1;min-width:220px"><span class="badge">Founder</span><h2 style="margin:10px 0 4px">Built by the founder of NovaDigital</h2><p style="margin-top:6px">Shieldly is owned and built by the founder of NovaDigital. The idea is simple: every website owner deserves an easy, honest way to keep an eye on their website — without complicated tools or forced subscriptions.</p></div></div>
-  <h2>Our mission</h2><p>Make website monitoring free and understandable for everyone. No jargon, free forever — with an optional Pro plan for faster checks — just clear checks and a clear explanation of how to fix what we find.</p>
+  <div class="card" style="padding:28px;display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap"><div class="avatar" style="width:56px;height:56px;font-size:18px">ND</div><div style="flex:1;min-width:220px"><span class="badge">Founder</span><h2 style="margin:10px 0 4px">Built by the founder of NovaDigital</h2><p style="margin-top:6px">Shieldly is owned and built by the founder of NovaDigital. The idea is simple: every website owner deserves an easy, honest way to keep an eye on their website — without complicated tools or expensive plans.</p></div></div>
+  <h2>Our mission</h2><p>Make website monitoring affordable and understandable for everyone. No jargon, one simple plan — just clear checks and a clear explanation of how to fix what we find.</p>
   <h2>What Shieldly does — and doesn’t do</h2><p>Shieldly checks your website from the outside and warns you when something is wrong: when your site goes offline, when your SSL certificate is about to expire, when your security headers are weak or when your domain is easy to spoof in emails.</p><p>Shieldly does <b>not</b> block attacks and does not sit between your visitors and your website. To actively block attacks, use a firewall such as Cloudflare or a security plugin — and use Shieldly to check that everything is set up well.</p>
   <h2>Get in touch</h2><p>Questions, feedback or ideas? We’d love to hear from you.</p>
-  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:18px"><button class="btn btn-primary btn-lg" data-go="#/contact">Contact us ${I('arrowRight',17,2)}</button><button class="btn btn-secondary btn-lg" data-go="#/signup">Get Started Free</button></div>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:18px"><button class="btn btn-primary btn-lg" data-go="#/contact">Contact us ${I('arrowRight',17,2)}</button><button class="btn btn-secondary btn-lg" data-go="#/signup">Get Started</button></div>
   </div></section>`}
 function pageContact(){return `<section class="hero" style="padding-bottom:0"><div class="hero-bg"></div><div class="hero-glow"></div><div class="container hero-in">
   <span class="eyebrow">${I('mail',14)}Contact</span><h1 style="font-size:clamp(36px,6vw,60px);margin-top:14px">Get in touch</h1>
@@ -3806,31 +3823,31 @@ function pageContact(){return `<section class="hero" style="padding-bottom:0"><d
   </div></div></div></section>`}
 function pagePrivacy(){return `<div class="container"><div class="page"><span class="eyebrow">Legal</span><h1 style="margin-top:10px">Privacy policy</h1><p class="muted">Last updated: ${new Date().toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'})}</p>
 <h2>Who we are</h2><p>Shieldly is made by the founder of NovaDigital. Questions about your privacy? <a class="link" href="${CONTACT_URL}" target="_blank" rel="noopener noreferrer">Contact us via our NovaDigital page</a>.</p>
-<h2>Where your data is stored</h2><p>This version of Shieldly runs entirely in your web browser. Your account (name, email, securely hashed password), the websites you add, check results and activity logs are stored only in your browser’s local storage on this device. Nothing is sent to a Shieldly server — except when you use Shieldly Pro (see below).</p>
+<h2>Where your data is stored</h2><p>This version of Shieldly runs entirely in your web browser. Your account (name, email, securely hashed password), the websites you add, check results and activity logs are stored only in your browser’s local storage on this device. For 24/7 monitoring, the Shieldly server also stores your email address, the domains and API URLs you monitor and their uptime results (see below).</p>
 <h2>Services used for checks</h2><p>To check your websites, your browser contacts: the websites you add (to measure availability and response time), Google Public DNS and Cloudflare DNS (to look up DNS and email security records), crt.sh (public certificate transparency logs, to read certificate expiry dates) and the Mozilla HTTP Observatory (to grade security headers). These services receive the domain name being checked and your IP address, under their own privacy policies.</p>
-<h2>Shieldly Pro & PayPal</h2><p>If you upgrade to Pro, you pay through PayPal. PayPal handles your payment details under its own privacy policy; Shieldly never sees your card or bank details. The Shieldly server stores only a hashed license key and the status of your PayPal subscription (for example active or cancelled, and the next billing date), and checks that status with PayPal. Your websites and check results are never sent to the Shieldly server.</p><h2>Translation</h2><p>If you choose another language with the language button, the page text is translated by Google Translate, which loads a script from Google and sends the page text to Google.</p>
+<h2>24/7 monitoring</h2><p>To check your websites when your computer is off, the Shieldly server (hosted on Netlify) stores your email address, the domains and API URLs you add, and the results of the uptime checks (kept for about the last 400 checks per website). It uses your email address only to send you down and recovery alerts (sent through Resend). Remove a website or cancel your subscription and the server stops checking it.</p><h2>Subscription & PayPal</h2><p>You pay for Shieldly through PayPal. PayPal handles your payment details under its own privacy policy; Shieldly never sees your card or bank details. The Shieldly server stores only a hashed license key and the status of your PayPal subscription (for example active or cancelled, and the next billing date), and checks that status with PayPal. Your websites and check results are never sent to the Shieldly server.</p><h2>Translation</h2><p>If you choose another language with the language button, the page text is translated by Google Translate, which loads a script from Google and sends the page text to Google.</p>
 <h2>Cookies & tracking</h2><p>Shieldly uses no cookies, analytics or advertising trackers.</p>
 <h2>Deleting your data</h2><p>Delete your account in Settings, or clear this site’s data in your browser settings. Check results older than 35 days are removed automatically.</p></div></div>`}
 function pageTerms(){return `<div class="container"><div class="page"><span class="eyebrow">Legal</span><h1 style="margin-top:10px">Terms of use</h1><p class="muted">Last updated: ${new Date().toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'})}</p>
-<h2>The service</h2><p>Shieldly monitors websites for availability and common security issues from your browser and is provided “as is”. The Free plan is free of charge. We do our best to keep it accurate and available, but we cannot guarantee that every issue is found or that the service is always available.</p>
+<h2>The service</h2><p>Shieldly monitors websites for availability and common security issues from your browser and is provided “as is”. We do our best to keep it accurate and available, but we cannot guarantee that every issue is found or that the service is always available.</p>
 <h2>Your responsibilities</h2><ul><li>Only add websites you own or are authorised to monitor.</li><li>Keep your login details secret.</li><li>Do not misuse the service, for example to overload or attack other systems.</li></ul>
-<h2>Shieldly Pro</h2><p>Shieldly Pro costs €4,99 per month (including VAT where applicable), billed monthly through PayPal until you cancel. You can cancel at any time under Plan; you keep Pro until the end of the period you already paid for. Payments that were already made are not refunded, unless the law requires it. If a payment fails, your account returns to the Free plan. Keep your license key private — anyone with it can use your Pro subscription.</p><h2>Limits</h2><p>There is no limit on the number of websites you can monitor. Please use the service fairly and only for websites you own or manage.</p>
+<h2>Subscription</h2><p>Shieldly costs €4,99 per month (including VAT where applicable), billed monthly through PayPal until you cancel. You can cancel at any time under Plan; you keep access until the end of the period you already paid for. Payments that were already made are not refunded, unless the law requires it. If a payment fails, monitoring stops until the payment succeeds. Keep your license key private — anyone with it can use your subscription.</p><h2>Limits</h2><p>You can monitor up to 5 websites per subscription. Please use the service fairly and only for websites you own or manage.</p>
 <h2>Contact</h2><p>Shieldly is made by the founder of NovaDigital. You can reach us via <a class="link" href="${CONTACT_URL}" target="_blank" rel="noopener noreferrer">our NovaDigital page</a> (click “Contact”).</p>
 <h2>Liability</h2><p>To the extent permitted by law, Shieldly is not liable for damage resulting from security incidents, outages or missed alerts.</p>
 <h2>Ending</h2><p>You can delete your account at any time. We may suspend accounts that misuse the service.</p>
 </div></div>`}
 
 /* ================= Auth pages ================= */
-function authSide(){return `<div class="auth-r"><div><div style="display:flex;align-items:center;gap:10px;margin-bottom:28px">${shieldMark(34)}</div><h2>Monitor your website. Automatically.</h2><p>Shieldly gives website owners an easy way to spot downtime and security weaknesses early — completely free.</p>
-<div class="auth-points"><div>${I('check',18,2.4)}Free forever — no credit card needed</div><div>${I('check',18,2.4)}Unlimited websites, no credits</div><div>${I('check',18,2.4)}Alerts the moment something breaks</div></div>
+function authSide(){return `<div class="auth-r"><div><div style="display:flex;align-items:center;gap:10px;margin-bottom:28px">${shieldMark(34)}</div><h2>Monitor your website. Automatically.</h2><p>Shieldly gives website owners an easy way to spot downtime and security weaknesses early — for €4,99 per month.</p>
+<div class="auth-points"><div>${I('check',18,2.4)}€4,99 per month — cancel any time</div><div>${I('check',18,2.4)}Up to 5 websites, checked 24/7</div><div>${I('check',18,2.4)}Alerts the moment something breaks</div></div>
 <div class="glass"><div class="row"><span style="display:flex;gap:8px;align-items:center"><span class="dot ok"></span>Website online</span><span style="color:#86efac">184 ms</span></div><div class="row"><span style="display:flex;gap:8px;align-items:center"><span class="dot ok"></span>SSL certificate valid</span><span style="color:#86efac">71 days</span></div><div class="row"><span style="display:flex;gap:8px;align-items:center"><span class="dot medium"></span>Missing HSTS header</span><span style="color:#fcd34d">Medium</span></div></div></div></div>`}
 const pwField=(id,name,label,ac,extra='')=>`<div class="field"><label class="label" for="${id}">${label}</label><div class="input-wrap">${I('lock',16)}<input class="input" id="${id}" name="${name}" type="password" placeholder="••••••••" autocomplete="${ac}"><button type="button" class="btn btn-ghost btn-sm btn-icon suffix" data-action="togglePw" aria-label="Show password">${I('eye',16)}</button></div>${extra}</div>`;
 function pageSignup(){
-  return `<div class="auth"><div class="auth-l">${logo()}<form class="auth-form" data-form="signup" novalidate><span class="badge" style="margin-bottom:16px">${I('sparkle',12)}Free forever · No credit card</span><h1>Create your free account</h1><p>Start monitoring your website in minutes.</p><div id="form-alert"></div>
+  return `<div class="auth"><div class="auth-l">${logo()}<form class="auth-form" data-form="signup" novalidate><span class="badge" style="margin-bottom:16px">${I('sparkle',12)}€4,99 / month · Cancel any time</span><h1>Create your account</h1><p>Start monitoring your website in minutes.</p><div id="form-alert"></div>
   <div class="field"><label class="label" for="su-name">Full name</label><div class="input-wrap">${I('user',16)}<input class="input" id="su-name" name="name" placeholder="Jane Cooper" autocomplete="name"></div></div>
   <div class="field"><label class="label" for="su-email">Email</label><div class="input-wrap">${I('mail',16)}<input class="input" id="su-email" name="email" type="email" placeholder="you@company.com" autocomplete="email"></div></div>
   ${pwField('su-pw','password','Password <small>At least 8 characters</small>','new-password','<div class="strength" id="pw-str" data-s="0"><i></i><i></i><i></i><i></i></div>')}
-  <button class="btn btn-primary btn-lg btn-block" type="submit" style="margin-top:6px"><span>Create Free Account</span></button>
+  <button class="btn btn-primary btn-lg btn-block" type="submit" style="margin-top:6px"><span>Create Account</span></button>
   <p class="hint" style="text-align:center;margin-top:14px">By creating an account you agree to the <a class="link" data-go="#/terms">terms</a> and <a class="link" data-go="#/privacy">privacy policy</a>.</p>
   <div class="divider">or</div><p style="text-align:center;font-size:14px" class="muted">Already have an account? <a class="link" data-go="#/login">Log in</a></p></form></div>${authSide()}</div>`;
 }
@@ -3839,7 +3856,7 @@ function pageLogin(){
   <div class="field"><label class="label" for="li-email">Email</label><div class="input-wrap">${I('mail',16)}<input class="input" id="li-email" name="email" type="email" placeholder="you@company.com" autocomplete="email"></div></div>
   ${pwField('li-pw','password','Password <a class="link" style="font-size:12.5px" data-go="#/forgot">Forgot password?</a>','current-password')}
   <button class="btn btn-primary btn-lg btn-block" type="submit"><span>Log in</span></button>
-  <p style="text-align:center;font-size:14px;margin-top:20px" class="muted">New to Shieldly? <a class="link" data-go="#/signup">Create a free account</a></p></form></div>${authSide()}</div>`;
+  <p style="text-align:center;font-size:14px;margin-top:20px" class="muted">New to Shieldly? <a class="link" data-go="#/signup">Create an account</a></p></form></div>${authSide()}</div>`;
 }
 const smallCard=(inner)=>`<div class="center-card"><div class="onb-card">${logo(24)}<div style="height:24px"></div>${inner}</div></div>`;
 function pageTwofa(){return smallCard(`<div class="onb-ic">${I('smartphone',24)}</div><h1>Two-factor authentication</h1><p class="desc">Enter the 6-digit code from your authenticator app.</p><form data-form="twofa" novalidate><div id="form-alert"></div><div class="field"><label class="label" for="tf-code">Verification code</label><input class="input" id="tf-code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="123456" style="font-size:20px;letter-spacing:.3em;text-align:center"></div><button class="btn btn-primary btn-lg btn-block" type="submit"><span>Verify</span></button><p style="text-align:center;margin-top:16px"><a class="link" data-go="#/login">Back to log in</a></p></form>`)}
@@ -3851,7 +3868,7 @@ function pageVerifyEmail(token){
   return smallCard(`<div id="ve-box" data-autorun="verifyEmail"><div class="skel" style="height:48px;width:48px;border-radius:14px"></div><div class="skel" style="height:24px;width:60%;margin-top:18px"></div><p class="desc">Confirming your email…</p></div>`);
 }
 function formAlert(form,msg){const a=form.querySelector('#form-alert');if(a)a.innerHTML=msg?`<div class="alert alert-err">${I('alert',16)}<span>${esc(msg)}</span></div>`:'';if(msg)shake(form)}
-async function afterLogin(user){S.user=user;await refreshSites().catch(()=>{});go(hasSites()?'#/app/overview':'#/onboarding')}
+async function afterLogin(user){S.user=user;await refreshSites().catch(()=>{});go(!paid()?'#/app/plan':hasSites()?'#/app/overview':'#/onboarding')}
 
 async function submitSignup(f){
   const n=f.name,e=f.email,p=f.password;let ok=true;formAlert(f,'');
@@ -3860,7 +3877,7 @@ async function submitSignup(f){
   if(p.value.length<8){setErr(p,'Password must be at least 8 characters.');ok=false}
   if(!ok)return shake(f);
   const b=f.querySelector('[type=submit]');btnLoad(b,true);
-  try{const d=await api('POST','/auth/signup',{name:n.value,email:e.value,password:p.value});toast('Account created',`Welcome to Shieldly, ${first(d.user.name)}! Let’s add your first website.`);await afterLogin(d.user)}
+  try{const d=await api('POST','/auth/signup',{name:n.value,email:e.value,password:p.value});toast('Account created',`Welcome to Shieldly, ${first(d.user.name)}! Subscribe to start monitoring your websites.`);await afterLogin(d.user)}
   catch(err){btnLoad(b,false);if(err.status===409)setErr(e,err.message);else formAlert(f,err.message)}
 }
 async function submitLogin(f){
@@ -3883,7 +3900,7 @@ async function submitReset(f){const p=f.password;if(p.value.length<8)return setE
 
 /* ================= Onboarding ================= */
 const CHECK_OPTS=[
- {id:'uptime',label:'Uptime monitoring',desc:'Checks every 5 minutes that your site is online',icon:'activity'},
+ {id:'uptime',label:'Uptime monitoring',desc:'Checks every minute that your site is online',icon:'activity'},
  {id:'ssl',label:'SSL & HTTPS',desc:'Certificate validity, expiry and redirects',icon:'lock'},
  {id:'headers',label:'Security headers',desc:'Header grade via Mozilla Observatory (HSTS, CSP…)',icon:'shield'},
  {id:'dns',label:'DNS & email security',desc:'SPF, DMARC, DNSSEC and CAA records',icon:'mail'},
@@ -3986,7 +4003,7 @@ async function runActivation(id){
   await refreshSites().catch(()=>{});
   const s=res.site;const iss=s.issues.high+s.issues.medium+s.issues.low;
   $('#act-card').innerHTML=`<div style="text-align:center"><div class="success-mark"><svg width="84" height="84" viewBox="0 0 84 84"><circle class="c" cx="42" cy="42" r="40" fill="#ecfdf5" stroke="#10b981" stroke-width="3"/><path class="k" d="m28 43 9 9 19-19" fill="none" stroke="#059669" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
-  <h1>Monitoring is active.</h1><p class="desc" style="margin-bottom:0">Shieldly now checks ${esc(s.domain)} every ${s.intervalMin} minutes and runs a full security scan every 6 hours — while Shieldly is open in your browser.</p></div>
+  <h1>Monitoring is active.</h1><p class="desc" style="margin-bottom:0">Shieldly now checks ${esc(s.domain)} every ${s.intervalMin===1?'minute':s.intervalMin+' minutes'}, day and night — also when your computer is off — and emails you when it goes down. Full security scans run while Shieldly is open.</p></div>
   <div class="kv"><div><span>Website</span><b><code translate="no">${esc(s.domain)}</code></b></div><div><span>Status</span><span class="status-active">ACTIVE</span></div><div><span>Security score</span><b style="font-size:17px">${s.score==null?'—':s.score} <span style="font-weight:500">/ 100</span></b></div>
   <div><span>Issues found</span><span style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">${iss?`${s.issues.high?`<span class="sev s-high">${s.issues.high} high</span>`:''}${s.issues.medium?`<span class="sev s-medium">${s.issues.medium} medium</span>`:''}${s.issues.low?`<span class="sev s-low">${s.issues.low} low</span>`:''}`:'<span class="tag green">None 🎉</span>'}</span></div></div>
   ${res.reachable===false?`<div class="alert alert-err">${I('alert',16)}<span>The scan couldn’t reach your site right now (${esc(res.error||'')}). Shieldly will keep trying automatically.</span></div>`:''}
@@ -3996,12 +4013,12 @@ async function runActivation(id){
 }
 
 /* ================= App shell ================= */
-const NAV=[['overview','Overview','grid'],['websites','Websites','globe'],['protection','Monitoring','shield'],['activity','Activity','activity'],['analytics','Analytics','chart'],['plan','Plan','sparkle'],['settings','Settings','settings']];
+const NAV=[['overview','Overview','grid'],['websites','Websites','globe'],['protection','Monitoring','shield'],['activity','Activity','activity'],['analytics','Analytics','chart'],['plan','Subscription','sparkle'],['settings','Settings','settings']];
 let appPage='overview',appSub='';
 function shellHTML(){
   return `<div class="app" id="app-shell"><aside class="sidebar" id="sidebar"><div class="sb-head">${logo(24,'#/app/overview')}<button class="btn btn-ghost btn-sm btn-icon sb-close" data-action="closeSidebar" aria-label="Close menu">${I('x',18)}</button></div>
   <div class="sb-label">Menu</div><nav class="sb-nav" id="sb-nav">${NAV.map(n=>`<a data-go="#/app/${n[0]}" data-nav="${n[0]}">${I(n[2],18)}${n[1]}${n[0]==='websites'?`<span class="cnt" id="sb-sites"></span>`:''}</a>`).join('')}</nav>
-  <div class="sb-foot"><label class="lang-pill lang-side notranslate" translate="no" title="Translate this page">${I('globe',16)}<select class="lang-select" aria-label="Language">${LANGS.map(l=>`<option value="${l[0]}">${l[1]}</option>`).join('')}</select>${I('chevDown',14)}</label><div class="plan-card"><div class="t"><span id="sb-plan">Shieldly Free</span><span class="badge" id="sb-badge" style="font-size:10.5px;padding:2px 7px">Free</span></div><div class="s" style="margin-bottom:8px" id="sb-plan-s">Unlimited websites · no credits</div><a class="sb-upg" data-go="#/app/plan" id="sb-upg" style="font-size:13px;font-weight:600;color:var(--blue);cursor:pointer">Upgrade to Pro →</a></div>
+  <div class="sb-foot"><label class="lang-pill lang-side notranslate" translate="no" title="Translate this page">${I('globe',16)}<select class="lang-select" aria-label="Language">${LANGS.map(l=>`<option value="${l[0]}">${l[1]}</option>`).join('')}</select>${I('chevDown',14)}</label><div class="plan-card"><div class="t"><span id="sb-plan">Shieldly</span><span class="badge" id="sb-badge" style="font-size:10.5px;padding:2px 7px">Inactive</span></div><div class="s" style="margin-bottom:8px" id="sb-plan-s">Up to 5 websites</div><a class="sb-upg" data-go="#/app/plan" id="sb-upg" style="font-size:13px;font-weight:600;color:var(--blue);cursor:pointer">Subscribe →</a></div>
   <div class="sb-user"><div class="avatar" id="sb-av"></div><div class="who"><b id="sb-name"></b><small id="sb-email"></small></div><button class="btn btn-ghost btn-sm btn-icon" data-action="logout" title="Log out" aria-label="Log out">${I('logout',16)}</button></div></div></aside>
   <div class="sb-overlay" data-action="closeSidebar"></div>
   <div class="main"><header class="topbar"><button class="btn btn-ghost btn-icon tb-menu" data-action="openSidebar" aria-label="Open menu">${I('menu',20)}</button><div class="crumb"><span>Shieldly</span>${I('chevRight',14)}<b id="tb-title"></b></div>
@@ -4013,7 +4030,7 @@ function shellHTML(){
 function updateShell(){
   const u=S.user;if(!u||!$('#app-shell'))return;
   $('#sb-sites').textContent=`${S.sites.length}`;
-  {const pro=u.plan==='pro';$('#sb-plan').textContent=pro?'Shieldly Pro':'Shieldly Free';$('#sb-badge').textContent=pro?'Pro':'Free';$('#sb-plan-s').textContent=pro?'1-minute checks · hourly scans':'Unlimited websites · no credits';$('#sb-upg').textContent=pro?'Manage plan →':'Upgrade to Pro →'}
+  {const pro=u.plan==='pro';$('#sb-plan').textContent='Shieldly';$('#sb-badge').textContent=pro?'Active':'Inactive';$('#sb-plan-s').textContent=pro?`${S.sites.length} of 5 websites · 24/7 checks`:'Subscribe to start monitoring';$('#sb-upg').textContent=pro?'Manage subscription →':'Subscribe →'}
   $('#sb-av').textContent=$('#tb-av').textContent=initials(u.name);
   $('#sb-name').textContent=$('#dd-name').textContent=u.name;
   $('#sb-email').textContent=$('#dd-email').textContent=u.email;
@@ -4092,7 +4109,7 @@ function banners(){
   const u=S.user;let h='';
   if(!u.emailVerified)h+=`<div class="banner warn">${I('mail',18)}<div class="grow"><b>Confirm your email to receive alerts.</b> We sent a link to ${esc(u.email)}.</div><button class="btn btn-secondary btn-sm" data-action="resendVerification">Resend email</button></div>`;
   S.sites.filter(s=>!s.verified).forEach(s=>{h+=`<div class="banner info">${I('shieldCheck',18)}<div class="grow"><b>${esc(s.domain)} is not verified yet.</b> Monitoring starts as soon as you verify ownership.</div><button class="btn btn-primary btn-sm" data-go="#/app/websites/${s.id}">Verify now</button></div>`});
-  if(!lsGet('shieldly.tabTip',false))h+=`<div class="banner info">${I('monitor',18)}<div class="grow"><b>Shieldly checks your websites while this tab is open.</b> Keep it open — a pinned tab works great. Checks pause when you close it and continue when you come back.</div>${window.Notification&&Notification.permission==='default'?`<button class="btn btn-primary btn-sm" data-action="enableNotif">Enable desktop alerts</button>`:''}<button class="btn btn-ghost btn-sm" data-action="dismissTip">Got it</button></div>`;
+  if(!lsGet('shieldly.tabTip',false))h+=`<div class="banner info">${I('monitor',18)}<div class="grow"><b>Your websites are checked 24/7 by the Shieldly servers.</b> You get an email when a site goes down. Security scans (SSL, headers, DNS) run while Shieldly is open.</div>${window.Notification&&Notification.permission==='default'?`<button class="btn btn-primary btn-sm" data-action="enableNotif">Enable desktop alerts</button>`:''}<button class="btn btn-ghost btn-sm" data-action="dismissTip">Got it</button></div>`;
   return h;
 }
 
@@ -4100,7 +4117,7 @@ function banners(){
 const PAGES={};
 let PRO_WAIT=0,proTimer=null;
 function proPoll(){clearTimeout(proTimer);if(!PRO_WAIT||appPage!=='plan')return;if(Date.now()-PRO_WAIT>15*60000){PRO_WAIT=0;return}
-  proTimer=setTimeout(async()=>{if(appPage!=='plan')return;try{const b=await api('POST','/billing/refresh');if(b.isPro){PRO_WAIT=0;await refreshMe();toast('Welcome to Shieldly Pro!','PayPal confirmed your subscription. Pro is now active.');renderPage(true);return}}catch(e){}proPoll()},5000)}
+  proTimer=setTimeout(async()=>{if(appPage!=='plan')return;try{const b=await api('POST','/billing/refresh');if(b.isPro){PRO_WAIT=0;await refreshMe();toast('Welcome to Shieldly!','PayPal confirmed your subscription. Let’s set up your first website.');go(hasSites()?'#/app/overview':'#/onboarding');return}}catch(e){}proPoll()},5000)}
 window.addEventListener('focus',()=>{if(PRO_WAIT&&appPage==='plan'){clearTimeout(proTimer);proTimer=setTimeout(()=>proPoll(),300)}});
 PAGES.plan=async function(){
   const b=await api('GET','/billing');const pro=b.isPro,p=b.pro;
@@ -4112,21 +4129,20 @@ PAGES.plan=async function(){
   const sandbox=b.configured&&b.env==='sandbox'?`<div class="banner warn">${I('alert',18)}<div class="grow"><b>Test mode (PayPal Sandbox).</b> No real money is charged. Pay with a PayPal <b>sandbox personal account</b> from developer.paypal.com.</div></div>`:'';
   const feat=items=>`<ul class="checklist" style="grid-template-columns:1fr;margin:16px 0">${items.map(i=>`<li>${I('check',16,3)}<span>${i}</span></li>`).join('')}</ul>`;
   let action='';
-  if(!b.configured)action=`<div class="alert alert-info">${I('clock',16)}<span>Shieldly Pro is coming soon. Shieldly Free keeps working with every feature you have now.</span></div>`;
+  if(!b.configured)action=`<div class="alert alert-info">${I('clock',16)}<span>Subscriptions are not available in this copy of Shieldly. Use Shieldly on its website to subscribe.</span></div>`;
   else if(pro&&p.status==='ACTIVE')action=`<div class="kv" style="margin:0 0 16px"><div><span>Status</span>${stLabel.ACTIVE}</div><div><span>Next payment</span><b>${d(p.nextBillingTime)} · ${price}</b></div><div><span>Subscription</span><code>${esc(p.subscriptionId||'')}</code></div></div><button class="btn btn-danger-outline btn-block" data-action="cancelPro">Cancel subscription</button>`;
-  else if(pro)action=`<div class="alert alert-info">${I('clock',16)}<span>${p.status==='CANCELLED'?'Your subscription is cancelled.':'Your subscription is not renewing.'} Pro stays active until <b>${d(p.proUntil)}</b>.</span></div><button class="btn btn-secondary btn-block" data-action="checkPro">Refresh status</button>`;
+  else if(pro)action=`<div class="alert alert-info">${I('clock',16)}<span>${p.status==='CANCELLED'?'Your subscription is cancelled.':'Your subscription is not renewing.'} You keep access until <b>${d(p.proUntil)}</b>.</span></div><button class="btn btn-secondary btn-block" data-action="checkPro">Refresh status</button>`;
   else if(p&&p.status==='SUSPENDED')action=`<div class="alert alert-info">${I('alert',16)}<span>PayPal could not collect your last payment. Update your payment method in PayPal, then refresh.</span></div><button class="btn btn-secondary btn-block" data-action="checkPro">Refresh status</button>`;
-  else if(p&&['APPROVAL_PENDING','APPROVED'].includes(p.status)&&PRO_WAIT)action=`<div class="alert alert-info" data-autorun="propoll">${I('clock',16)}<span>Finish the checkout in the PayPal tab. Shieldly checks with PayPal automatically and turns on Pro as soon as your subscription is confirmed.</span></div><button class="btn btn-primary btn-block" data-action="checkPro">I’ve paid — check now</button><button class="btn btn-ghost btn-block" style="margin-top:8px" data-action="upgradePro">Open PayPal again</button>`;
-  else action=`<button class="btn btn-primary btn-lg btn-block" data-action="upgradePro">${I('sparkle',17)}Upgrade with PayPal</button><p class="hint" style="text-align:center;margin-top:10px">${price} per month · renews monthly · cancel any time</p>`;
-  const restore=b.configured&&!pro?`<div class="card mt"><div class="card-h"><div><h3>Already have Pro?</h3><p>Use your Pro subscription on this browser or computer with your license key.</p></div></div><div class="card-b"><form data-form="restorePro" novalidate style="display:flex;gap:10px;flex-wrap:wrap"><input class="input" id="lic-key" placeholder="SHL-…" autocomplete="off" spellcheck="false" style="flex:1 1 260px;font-family:var(--mono,monospace)"><button class="btn btn-secondary" type="submit">Activate license</button></form></div></div>`:'';
-  const keyCard=p&&p.licenseKey&&(pro||p.status!=='APPROVAL_PENDING')?`<div class="card mt"><div class="card-h"><div><h3>Your license key</h3><p>Use it to turn on Pro on another computer or browser. Keep it private.</p></div></div><div class="card-b" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><code style="flex:1 1 260px;word-break:break-all;font-size:12.5px">${esc(p.licenseKey)}</code><button class="btn btn-secondary btn-sm" data-action="copyKey" data-key="${esc(p.licenseKey)}">${I('copy',14)}Copy</button></div></div>`:'';
-  return `${sandbox}<div class="page-head"><div><h1>Plan</h1><p>You are on <b style="color:var(--fg)">Shieldly ${pro?'Pro':'Free'}</b>${pro&&p.proUntil?` · Pro active until ${d(p.proUntil)}`:''}.</p></div></div>
-  <div class="grid g2">
-   <div class="card"><div class="card-b"><div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:17px">Free</b>${!pro?'<span class="tag green">Current plan</span>':''}</div><div class="price" style="margin-top:10px"><b style="font-size:40px">€0</b><span>/ month</span></div>
-    ${feat(['Unlimited websites','No credits or usage limits','Uptime checks every 5 minutes','Full security scan every 6 hours'])}</div></div>
-   <div class="card" style="border-color:var(--blue200);box-shadow:0 0 0 3px rgba(37,99,255,.08)"><div class="card-b"><div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:17px">Pro</b>${pro?'<span class="tag green">Current plan</span>':'<span class="badge">Optional</span>'}</div><div class="price" style="margin-top:10px"><b style="font-size:40px">${price}</b><span>/ month</span></div>
-    ${feat(['Everything in Free','Uptime checks every minute','Full security scan every hour','Billed monthly via PayPal'])}${action}</div></div>
-  </div>${keyCard}${restore}
+  else if(p&&['APPROVAL_PENDING','APPROVED'].includes(p.status)&&PRO_WAIT)action=`<div class="alert alert-info" data-autorun="propoll">${I('clock',16)}<span>Finish the checkout in the PayPal tab. Shieldly checks with PayPal automatically and unlocks your account as soon as your subscription is confirmed.</span></div><button class="btn btn-primary btn-block" data-action="checkPro">I’ve paid — check now</button><button class="btn btn-ghost btn-block" style="margin-top:8px" data-action="upgradePro">Open PayPal again</button>`;
+  else action=`<button class="btn btn-primary btn-lg btn-block" data-action="upgradePro">${I('sparkle',17)}Subscribe with PayPal</button><p class="hint" style="text-align:center;margin-top:10px">${price} per month · renews monthly · cancel any time</p>`;
+  const restore=b.configured&&!pro?`<div class="card mt"><div class="card-h"><div><h3>Already subscribed?</h3><p>Use your subscription on this browser or computer with your license key.</p></div></div><div class="card-b"><form data-form="restorePro" novalidate style="display:flex;gap:10px;flex-wrap:wrap"><input class="input" id="lic-key" placeholder="SHL-…" autocomplete="off" spellcheck="false" style="flex:1 1 260px;font-family:var(--mono,monospace)"><button class="btn btn-secondary" type="submit">Activate license</button></form></div></div>`:'';
+  const keyCard=p&&p.licenseKey&&(pro||p.status!=='APPROVAL_PENDING')?`<div class="card mt"><div class="card-h"><div><h3>Your license key</h3><p>Use it to unlock Shieldly on another computer or browser. Keep it private.</p></div></div><div class="card-b" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><code style="flex:1 1 260px;word-break:break-all;font-size:12.5px">${esc(p.licenseKey)}</code><button class="btn btn-secondary btn-sm" data-action="copyKey" data-key="${esc(p.licenseKey)}">${I('copy',14)}Copy</button></div></div>`:'';
+  const head=pro?`<div class="page-head"><div><h1>Subscription</h1><p>${p.status==='ACTIVE'?`Your Shieldly subscription is <b style="color:var(--fg)">active</b> and renews on ${d(p.nextBillingTime)}.`:`Your subscription is <b style="color:var(--fg)">cancelled</b> — no more payments. You keep access until ${d(p.proUntil)}; after that, monitoring stops.`}</p></div></div>`
+    :`<div class="page-head"><div><h1>Activate Shieldly</h1><p>Subscribe to start monitoring your websites. Every feature is included.</p></div></div>`;
+  return `${sandbox}${head}
+  <div class="card" style="max-width:560px;border-color:var(--blue200);box-shadow:0 0 0 3px rgba(37,99,255,.08)"><div class="card-b"><div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:17px">Shieldly</b>${pro?(p.status==='ACTIVE'?'<span class="tag green">Active</span>':'<span class="tag">Cancelled</span>'):'<span class="badge">All features</span>'}</div><div class="price" style="margin-top:10px"><b style="font-size:40px">${price}</b><span>/ month</span></div>
+    ${feat(['Up to 5 websites','Uptime checks every minute, 24/7','Email alerts when a site goes down','Full security scan every hour while Shieldly is open','SSL, security headers, DNS & email checks','Cancel any time'])}${action}</div></div>
+  ${keyCard}${restore}
   <p class="hint" style="margin-top:16px">Payments are verified by the Shieldly server directly with PayPal. Shieldly never sees your card or bank details.</p>`;
 };
 PAGES.overview=async function(){
@@ -4141,7 +4157,7 @@ PAGES.overview=async function(){
   const unverified=sites.length-sites.filter(s=>s.verified).length;
   return `${banners()}<div class="page-head"><div><h1>${greeting()}, ${esc(first(u.name))}</h1><p>Here's what's happening across your websites.</p></div><div class="acts"><button class="btn btn-secondary" data-go="#/app/activity">${I('activity',16)}View activity</button><button class="btn btn-primary" data-action="addSite">${I('plus',16,2.2)}Add Website</button></div></div>
   <div class="grid g4 keep2">
-   <div class="card stat"><div class="stat-top"><span class="stat-l">Monitored Websites</span><span class="stat-ic green">${I('globe',17)}</span></div><div class="stat-v">${monitored}</div><div class="stat-s">${unverified?`<span style="color:var(--amber2);font-weight:600">${unverified} awaiting verification</span>`:'Unlimited — add as many as you like'}</div></div>
+   <div class="card stat"><div class="stat-top"><span class="stat-l">Monitored Websites</span><span class="stat-ic green">${I('globe',17)}</span></div><div class="stat-v">${monitored}</div><div class="stat-s">${unverified?`<span style="color:var(--amber2);font-weight:600">${unverified} awaiting verification</span>`:`${S.sites.length} of 5 websites used`}</div></div>
    <div class="card stat"><div class="stat-top"><span class="stat-l">Uptime (24h)</span><span class="stat-ic blue">${I('activity',17)}</span></div><div class="stat-v">${pct(uptime)}</div><div class="stat-s">${uptime==null?'Available after the first checks':'Across all monitored websites'}</div></div>
    <div class="card stat"><div class="stat-top"><span class="stat-l">Open Issues</span><span class="stat-ic ${open.high?'red':''}">${I('shieldAlert',17)}</span></div><div class="stat-v">${fmt(openT)}</div><div class="stat-s">${ov.issues7d} detected in the last 7 days</div></div>
    <div class="card stat"><div class="stat-top"><span class="stat-l">Security Score</span><span class="stat-ic blue">${I('gauge',17)}</span></div><div class="stat-v">${score==null?'—':score} <small>/ 100</small></div><div class="stat-s">${score==null?'Available after the first scan':score>=90?'<span class="up">Excellent</span>':score>=70?'<span style="color:var(--amber2);font-weight:600">Good</span> · room to improve':'<span class="down">Needs attention</span>'}</div></div>
@@ -4164,8 +4180,8 @@ PAGES.overview=async function(){
 PAGES.websites=async function(sub){
   if(sub)return siteDetail(sub);
   const u=S.user,sites=S.sites,n=sites.length;
-  const empty=`<button class="slot-empty" data-action="addSite"><span class="pl">${I('plus',18)}</span>Add website<small class="muted" style="font-weight:400">Unlimited · free forever</small></button>`;
-  return `${banners()}<div class="page-head"><div><h1>Websites</h1><p><b style="color:var(--fg)">${n}</b> website${n===1?'':'s'} monitored · unlimited, free forever</p></div><div class="acts"><button class="btn btn-primary" data-action="addSite">${I('plus',16,2.2)}Add Website</button></div></div>
+  const empty=S.sites.length>=5?'':`<button class="slot-empty" data-action="addSite"><span class="pl">${I('plus',18)}</span>Add website<small class="muted" style="font-weight:400">${5-S.sites.length} of 5 left</small></button>`;
+  return `${banners()}<div class="page-head"><div><h1>Websites</h1><p><b style="color:var(--fg)">${n}</b> of 5 websites monitored</p></div><div class="acts"><button class="btn btn-primary" data-action="addSite">${I('plus',16,2.2)}Add Website</button></div></div>
   <div class="grid g3">${sites.map(s=>`<div class="card site-card"><div class="hd"><div class="fav">${esc(s.domain[0])}</div><div class="n"><b>${esc(s.domain)}</b><small>${s.lastCheckedAt?`Checked ${rel(s.lastCheckedAt)}`:`Added ${new Date(s.createdAt).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}`}</small></div>${healthPill(s)}</div>
    <div class="site-metrics"><div><span>Score</span><b>${s.score==null?'—':s.score}</b></div><div><span>Uptime 24h</span><b>${s.stats.uptime24h==null?'—':Math.round(s.stats.uptime24h*10)/10+'%'}</b></div><div><span>Response</span><b>${s.stats.avgMs24h==null?'—':fmt(s.stats.avgMs24h)}<small style="font-size:11px;color:var(--muted)">${s.stats.avgMs24h==null?'':' ms'}</small></b></div></div>
    <div style="display:flex;flex-direction:column;gap:8px;font-size:13px"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><span class="muted">Issues</span><span style="display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end">${s.verified&&s.score!=null?issuesChips(s.issues):'<span class="tag">Not scanned yet</span>'}</span></div>
@@ -4330,7 +4346,7 @@ const A={
   openSidebar(){$('#app-shell').classList.add('sb-open')},
   closeSidebar,
   toggleMenu(el){const d=el.closest('.dd');const open=!d.classList.contains('open');closeMenus(d);d.classList.toggle('open',open);if(open&&el.dataset.menu==='notif'){lsSet('shieldly.seen',Date.now());$('#bell-dot').classList.add('hidden')}},
-  addSite(){    try{localStorage.removeItem('shieldly.onb')}catch(e){}go('#/onboarding')},
+  addSite(){if(S.sites.length>=5)return toast('You have reached 5 websites','Remove a website to add another one.','info',6000);try{localStorage.removeItem('shieldly.onb')}catch(e){}go('#/onboarding')},
   async removeSite(el){const s=S.sites.find(x=>x.id===el.dataset.id);if(!s)return;
     const ok=await confirmDialog({title:`Remove ${esc(s.domain)}?`,text:'Shieldly will stop monitoring this website and delete its checks and issues. Activity logs are kept.',confirm:'Remove website',danger:true});if(!ok)return;
     try{await api('DELETE','/sites/'+s.id);toast('Website removed',`${s.domain} is no longer monitored.`,'info');await refreshSites();if(!S.sites.length){lsSet('shieldly.skipOnb',true)}go('#/app/websites');if(appPage==='websites'&&!appSub)renderPage(true)}catch(e){toastErr(e)}},
@@ -4340,11 +4356,11 @@ const A={
   pickSite(el){protSite=el.dataset.id;if(appPage!=='protection')go('#/app/protection');else renderPage(true)},
   async upgradePro(el){const w=window.open('about:blank','_blank');btnLoad(el,true);
     try{const d=await api('POST','/billing/subscribe');if(w&&!w.closed){try{w.opener=null}catch(_){}w.location.href=d.approveUrl}else window.open(d.approveUrl,'_blank','noopener');
-      PRO_WAIT=Date.now();toast('Complete your payment in PayPal','The PayPal checkout opened in a new tab. Shieldly checks automatically when you are done.','info',8000);renderPage(true)}
+      PRO_WAIT=Date.now();toast('Complete your payment in PayPal','The PayPal checkout opened in a new tab. Shieldly continues automatically when you are done.','info',8000);renderPage(true)}
     catch(e){if(w)w.close();btnLoad(el,false);toastErr(e)}},
-  async checkPro(el){btnLoad(el,true);try{const b=await api('POST','/billing/refresh');await refreshMe();if(b.isPro)toast('Shieldly Pro is active','Thank you for upgrading!');else toast('Not active yet',b.pro&&b.pro.status==='APPROVAL_PENDING'?'PayPal has not confirmed your subscription yet. Finish the checkout in the PayPal tab.':'Your subscription is not active.','info',6000);renderPage(true)}catch(e){btnLoad(el,false);toastErr(e)}},
-  async cancelPro(el){const ok=await confirmDialog({title:'Cancel Shieldly Pro?',text:'Your subscription stops renewing. You keep Pro until the end of the period you already paid for.',confirm:'Cancel subscription',danger:true,icon:'alert'});if(!ok)return;
-    btnLoad(el,true);try{await api('POST','/billing/cancel');await refreshMe();toast('Subscription cancelled','You keep Pro until the end of the paid period.','info');renderPage(true)}catch(e){btnLoad(el,false);toastErr(e)}},
+  async checkPro(el){btnLoad(el,true);try{const b=await api('POST','/billing/refresh');await refreshMe();if(b.isPro){toast('Your subscription is active','Thank you! Let’s set up your website.');return go(hasSites()?'#/app/overview':'#/onboarding')}else toast('Not active yet',b.pro&&b.pro.status==='APPROVAL_PENDING'?'PayPal has not confirmed your subscription yet. Finish the checkout in the PayPal tab.':'Your subscription is not active.','info',6000);renderPage(true)}catch(e){btnLoad(el,false);toastErr(e)}},
+  async cancelPro(el){const ok=await confirmDialog({title:'Cancel your subscription?',text:'Your subscription stops renewing. You keep access until the end of the period you already paid for. After that, monitoring stops.',confirm:'Cancel subscription',danger:true,icon:'alert'});if(!ok)return;
+    btnLoad(el,true);try{await api('POST','/billing/cancel');await refreshMe();toast('Subscription cancelled','You keep access until the end of the paid period.','info');renderPage(true)}catch(e){btnLoad(el,false);toastErr(e)}},
   copyKey(el){const k=el.dataset.key;(navigator.clipboard?navigator.clipboard.writeText(k):Promise.reject()).then(()=>toast('License key copied','Keep it private.')).catch(()=>{prompt('Copy your license key:',k)})},
   areaToggle(el){el.classList.toggle('on')},
   interval(el){if(el.dataset.pro){toast('1-minute checks are a Pro feature','Upgrade to Shieldly Pro under Plan for checks every minute.','info');return}$$('#interval button').forEach(b=>b.classList.toggle('on',b===el));const s=S.sites.find(x=>x.id===protSite);},
