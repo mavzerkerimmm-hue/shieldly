@@ -1,4 +1,4 @@
-// Shieldly Pro — self-contained Netlify Function (put this file in the folder netlify/functions/)
+// Shieldly — self-contained Netlify Function (this file goes in the folder netlify/functions/)
 import crypto from 'node:crypto';
 // Shieldly Pro on Netlify — PayPal Subscriptions (server-side only).
 // The PayPal Client Secret is read ONLY from Netlify environment variables and never reaches the browser.
@@ -160,6 +160,125 @@ async function handleWebhook(headers, event) {
   }
   if (evId) await sset(`wh/${evId}`, { type, at: new Date().toISOString() });
   return { status: 200, body: { ok: true } };
+}
+
+// ======================= 24/7 monitoring (runs on Netlify, also when nobody has Shieldly open) =======================
+const MAX_SITES = 5, KEEP_RESULTS = 400; // max 5 websites per subscription
+const hostOk = (h) => /^(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(h) && !/(^|\.)(localhost|local|internal|lan|home|test|invalid|example)$/.test(h);
+function cleanDomain(d) { const h = String(d || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/:\d+$/, ''); return hostOk(h) ? h : null; }
+function cleanApi(u) {
+  if (!u) return null;
+  try { const x = new URL(String(u)); if (!/^https?:$/.test(x.protocol) || x.username || x.password || (x.port && !['80', '443', '8080', '8443'].includes(x.port)) || !hostOk(x.hostname)) return null; const s = x.toString(); return s.length <= 300 ? s : null; } catch { return null; }
+}
+async function proByHash(h) {
+  const ids = (await sget(`key/${h}`)) || [];
+  const rows = (await Promise.all(ids.map((id) => sget(`sub/${id}`)))).filter(Boolean);
+  return rows.some((r) => r.proUntil && Date.parse(r.proUntil) > Date.now());
+}
+// The HTML app sends the customer's websites here (only while the subscription is active).
+async function saveSites(key, body) {
+  const st = await licenseState(key);
+  if (!st.isPro) throw new HttpError(402, 'An active Shieldly subscription is required.');
+  const h = keyHash(key);
+  const prev = (await sget(`mon/${h}`)) || { sites: {} };
+  const email = typeof body.email === 'string' && /^[^\s@]{1,64}@[^\s@]{1,190}\.[a-z]{2,}$/i.test(body.email) ? body.email.trim().slice(0, 254) : prev.email || null;
+  const sites = {};
+  for (const s of (Array.isArray(body.sites) ? body.sites : []).slice(0, MAX_SITES)) {
+    const id = String(s && s.id || '').slice(0, 40); const domain = cleanDomain(s && s.domain);
+    if (!/^[a-z0-9]{6,40}$/i.test(id) || !domain) continue;
+    const old = prev.sites[id] || {};
+    sites[id] = { ...old, domain, apiUrl: cleanApi(s.apiUrl), active: !!s.active, intervalMin: [1, 5, 10, 15, 30, 60].includes(Number(s.intervalMin)) ? Number(s.intervalMin) : 5, results: old.domain === domain ? (old.results || []) : [] };
+  }
+  await sset(`mon/${h}`, { email, alerts: body.alerts !== false, sites, updatedAt: new Date().toISOString() });
+  const index = (await sget('mon-index')) || [];
+  if (!index.includes(h)) { index.push(h); await sset('mon-index', index); }
+  return { ok: true, monitored: Object.values(sites).filter((x) => x.active).length };
+}
+// The HTML app fetches the results of the server checks to show them in the dashboard.
+async function getResults(key, since) {
+  const rec = await sget(`mon/${keyHash(key)}`);
+  if (!rec) return { sites: {}, serverTime: new Date().toISOString() };
+  const t = Date.parse(since || 0) || 0; const out = {};
+  for (const [id, s] of Object.entries(rec.sites)) out[id] = { health: s.health || 'unknown', apiHealth: s.apiHealth || 'unknown', lastCheckedAt: s.lastCheckedAt || null, results: (s.results || []).filter((r) => Date.parse(r.ts) > t) };
+  return { sites: out, serverTime: new Date().toISOString() };
+}
+async function probe(url) {
+  if (process.env.SHIELDLY_TEST === '1' && globalThis.__SHIELDLY_PROBE) return globalThis.__SHIELDLY_PROBE(url);
+  const t0 = Date.now();
+  try {
+    const res = await fetch(url, { method: 'GET', redirect: 'follow', headers: { 'User-Agent': 'ShieldlyMonitor/1.0 (+uptime check)' }, signal: AbortSignal.timeout(10000) });
+    try { await res.body?.cancel(); } catch {}
+    const ms = Date.now() - t0;
+    if (res.status >= 500) return { ok: false, ms, code: res.status, error: `Server error (HTTP ${res.status})` };
+    return { ok: true, ms, code: res.status };
+  } catch (e) { return { ok: false, ms: Date.now() - t0, code: null, error: e && e.name === 'TimeoutError' ? 'No response within 10s' : 'Could not connect (server offline, connection refused or SSL error)' }; }
+}
+async function sendMail(to, subject, text) {
+  if (process.env.SHIELDLY_TEST === '1' && globalThis.__SHIELDLY_MAIL) return globalThis.__SHIELDLY_MAIL(to, subject, text);
+  const key = (process.env.RESEND_API_KEY || '').trim(), from = (process.env.EMAIL_FROM || '').trim();
+  if (!key || !from || !to) { console.log('[mail] (not sent — RESEND_API_KEY/EMAIL_FROM not set)', to, subject); return false; }
+  try {
+    const r = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ from, to: [to], subject, text }), signal: AbortSignal.timeout(10000) });
+    if (!r.ok) console.error('[mail] failed', r.status, (await r.text()).slice(0, 200));
+    return r.ok;
+  } catch (e) { console.error('[mail] error', e.message); return false; }
+}
+function step(site, target, r, mails, email, alerts) {
+  const hk = target === 'api' ? 'apiHealth' : 'health', fk = target === 'api' ? 'apiFailCount' : 'failCount';
+  const name = target === 'api' ? site.apiUrl : site.domain, label = target === 'api' ? 'API' : 'Website';
+  if (r.ok) {
+    if (site[hk] === 'down' && alerts && email) mails.push([email, `✅ ${name} is back online`, `Good news: your ${label.toLowerCase()} ${name} is reachable again (responded in ${r.ms} ms).\n\n— Shieldly`]);
+    site[hk] = 'up'; site[fk] = 0;
+  } else {
+    site[fk] = (site[fk] || 0) + 1;
+    if (site[fk] >= 2 && site[hk] !== 'down') {
+      site[hk] = 'down';
+      if (alerts && email) mails.push([email, `🔴 ${name} is down`, `Shieldly could not reach your ${label.toLowerCase()} ${name} (two checks in a row).\n\nReason: ${r.error}\nTime: ${new Date().toUTCString()}\n\nYou will get another email as soon as it is back online.\n\n— Shieldly`]);
+    }
+  }
+}
+// Called every minute by the scheduled function.
+async function runMonitor({ deadlineMs = 24000 } = {}) {
+  const started = Date.now();
+  const index = (await sget('mon-index')) || [];
+  const jobs = [];
+  const recs = {};
+  for (const h of index) {
+    const rec = await sget(`mon/${h}`); if (!rec) continue;
+    if (!(await proByHash(h))) continue; // subscription not active -> no checks
+    recs[h] = rec;
+    for (const [id, s] of Object.entries(rec.sites).slice(0, MAX_SITES)) {
+      if (!s.active) continue;
+      const due = !s.lastCheckedAt || Date.now() - Date.parse(s.lastCheckedAt) >= (s.intervalMin || 5) * 60000 - 20000;
+      if (due) jobs.push({ h, id });
+    }
+  }
+  const mails = []; let done = 0;
+  const worker = async () => {
+    while (jobs.length && Date.now() - started < deadlineMs) {
+      const { h, id } = jobs.shift(); const rec = recs[h]; const s = rec.sites[id];
+      const ts = new Date().toISOString();
+      let rs = await probe(`https://${s.domain}/`);
+      if (!rs.ok) { const r2 = await probe(`http://${s.domain}/`); if (r2.ok) rs = r2; }
+      const ra = s.apiUrl ? await probe(s.apiUrl) : null;
+      s.results = s.results || [];
+      s.results.push({ ts, target: 'site', ok: rs.ok, ms: rs.ms, code: rs.code, error: rs.error || null });
+      step(s, 'site', rs, mails, rec.email, rec.alerts);
+      if (ra) { s.results.push({ ts, target: 'api', ok: ra.ok, ms: ra.ms, code: ra.code, error: ra.error || null }); step(s, 'api', ra, mails, rec.email, rec.alerts); }
+      if (s.results.length > KEEP_RESULTS) s.results.splice(0, s.results.length - KEEP_RESULTS);
+      s.lastCheckedAt = ts; rec._dirty = true; done++;
+    }
+  };
+  await Promise.all(Array.from({ length: 12 }, worker));
+  for (const [h, rec] of Object.entries(recs)) {
+    if (!rec._dirty) continue; delete rec._dirty;
+    // merge with the latest copy so a site list saved during this run is not lost
+    const cur = (await sget(`mon/${h}`)) || rec;
+    for (const [id, s] of Object.entries(rec.sites)) if (cur.sites[id] && cur.sites[id].domain === s.domain) cur.sites[id] = { ...cur.sites[id], results: s.results, health: s.health, apiHealth: s.apiHealth, failCount: s.failCount, apiFailCount: s.apiFailCount, lastCheckedAt: s.lastCheckedAt };
+    await sset(`mon/${h}`, cur);
+  }
+  for (const m of mails) await sendMail(...m);
+  return { checked: done, left: jobs.length, mails: mails.length };
 }
 
 // ===================== function =====================
