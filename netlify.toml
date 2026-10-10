@@ -1,0 +1,47 @@
+# Shieldly on Netlify
+# - website: index.html (in the main folder)
+# - payment code: netlify/functions/license.mjs and netlify/functions/paypal-webhook.mjs
+[build]
+  publish = "."
+  command = ""
+
+[build.environment]
+  NODE_VERSION = "20"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# Never serve the source/config files as web pages
+[[redirects]]
+  from = "/netlify/*"
+  to = "/"
+  status = 404
+  force = true
+[[redirects]]
+  from = "/package.json"
+  to = "/"
+  status = 404
+  force = true
+[[redirects]]
+  from = "/package-lock.json"
+  to = "/"
+  status = 404
+  force = true
+[[redirects]]
+  from = "/netlify.toml"
+  to = "/"
+  status = 404
+  force = true
+[[redirects]]
+  from = "/LEESMIJ.md"
+  to = "/"
+  status = 404
+  force = true
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    X-Frame-Options = "DENY"

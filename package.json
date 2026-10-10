@@ -1,0 +1,7 @@
+{
+  "name": "shieldly-netlify",
+  "private": true,
+  "type": "module",
+  "description": "Shieldly website + Pro billing (PayPal Subscriptions) on Netlify",
+  "dependencies": { "@netlify/blobs": "8.2.0" }
+}
