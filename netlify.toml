@@ -1,6 +1,6 @@
-# Shieldly on Netlify
-# - website: index.html (in the main folder)
-# - payment code: netlify/functions/license.mjs and netlify/functions/paypal-webhook.mjs
+# Shieldly on Netlify — everything lives in the main folder:
+# - website: index.html
+# - payment + 24/7 code: license.mjs, monitor.mjs, stripe-webhook.mjs, paypal-webhook.mjs
 [build]
   publish = "."
   command = ""
@@ -9,12 +9,32 @@
   NODE_VERSION = "20"
 
 [functions]
-  directory = "netlify/functions"
+  directory = "."
   node_bundler = "esbuild"
 
 # Never serve the source/config files as web pages
 [[redirects]]
   from = "/netlify/*"
+  to = "/"
+  status = 404
+  force = true
+[[redirects]]
+  from = "/license.mjs"
+  to = "/"
+  status = 404
+  force = true
+[[redirects]]
+  from = "/monitor.mjs"
+  to = "/"
+  status = 404
+  force = true
+[[redirects]]
+  from = "/stripe-webhook.mjs"
+  to = "/"
+  status = 404
+  force = true
+[[redirects]]
+  from = "/paypal-webhook.mjs"
   to = "/"
   status = 404
   force = true
