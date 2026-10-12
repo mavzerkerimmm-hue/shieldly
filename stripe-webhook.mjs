@@ -1,4 +1,4 @@
-// Shieldly — self-contained Netlify Function (this file goes in the folder netlify/functions/)
+// Shieldly — self-contained Netlify Function
 import crypto from 'node:crypto';
 // Shieldly on Netlify — Stripe subscriptions (server-side only).
 // The Stripe secret key is read ONLY from Netlify environment variables and never reaches the browser.
@@ -13,15 +13,16 @@ const GRACE_MS = 1 * 86400000;
 const configured = () => /^(sk|rk)_(test|live)_/.test(SECRET);
 
 // ---------- storage (Netlify Blobs; in-memory for tests) ----------
-let storePromise = null;
-function setTestStore(s) { storePromise = Promise.resolve(s); }
+// NOTE: Netlify gives every request a fresh, short-lived access token for Blobs,
+// so the store is created again on every call (never cached between requests).
+let testStore = null;
+function setTestStore(s) { testStore = s; }
+let blobsModule = null;
 async function store() {
-  if (!storePromise && globalThis.__SHIELDLY_TEST_STORE) storePromise = Promise.resolve(globalThis.__SHIELDLY_TEST_STORE);
-  if (!storePromise) storePromise = import('@netlify/blobs').then(({ getStore }) => {
-    const s = getStore({ name: 'shieldly-billing', consistency: 'strong' });
-    return { get: (k) => s.get(k, { type: 'json' }), set: (k, v) => s.setJSON(k, v) };
-  });
-  return storePromise;
+  if (testStore || globalThis.__SHIELDLY_TEST_STORE) return testStore || globalThis.__SHIELDLY_TEST_STORE;
+  if (!blobsModule) blobsModule = await import('@netlify/blobs');
+  const s = blobsModule.getStore({ name: 'shieldly-billing', consistency: 'strong' });
+  return { get: (k) => s.get(k, { type: 'json' }), set: (k, v) => s.setJSON(k, v) };
 }
 const sget = async (k) => (await store()).get(k);
 const sset = async (k, v) => (await store()).set(k, v);
@@ -72,6 +73,7 @@ const periodEnd = (sub) => sub.current_period_end || (sub.items && sub.items.dat
 
 // Pro is ONLY granted from what this function fetched itself from Stripe.
 async function syncLicense(id) {
+  if (!validSub(id)) return { ok: false, reason: 'legacy' }; // old PayPal subscription ids (I-…) are ignored
   const row = await sget(`sub/${id}`);
   if (!row) return { ok: false, reason: 'unknown_subscription' };
   let subId = row.stripeSub;
@@ -108,7 +110,7 @@ async function licenseState(key, { refresh = false, subscriptionId = null } = {}
     const r = await sget(`sub/${subscriptionId}`);
     if (r && r.status === 'APPROVAL_PENDING') { try { await syncLicense(subscriptionId); } catch (e) { console.error('[license] sync', e.message); } }
   }
-  const rows = (await Promise.all(ids.map((id) => sget(`sub/${id}`)))).filter(Boolean);
+  const rows = (await Promise.all(ids.filter(validSub).map((id) => sget(`sub/${id}`)))).filter(Boolean);
   if (!rows.length) return { found: false, isPro: false, status: null };
   rows.sort((a, b) => rank(b) - rank(a) || Date.parse(b.createdAt) - Date.parse(a.createdAt));
   let lic = rows[0];
@@ -132,12 +134,12 @@ async function subscribe(key, origin) {
   }, { 'Idempotency-Key': `shieldly-cs-${crypto.randomUUID()}` });
   if (!cs || !validSub(cs.id) || !cs.url) throw new HttpError(502, 'Stripe did not create the checkout. Please try again.');
   await sset(`sub/${cs.id}`, { id: cs.id, keyHash: h, planId: priceId, status: 'APPROVAL_PENDING', createdAt: new Date().toISOString() });
-  const ids = (await sget(`key/${h}`)) || []; ids.push(cs.id); await sset(`key/${h}`, ids.slice(-20));
+  const ids = ((await sget(`key/${h}`)) || []).filter(validSub); ids.push(cs.id); await sset(`key/${h}`, ids.slice(-20));
   return { licenseKey: key, subscriptionId: cs.id, approveUrl: cs.url, env: ENV };
 }
 // Cancel any time: no more payments; access stays until the end of the period already paid for.
 async function cancel(key) {
-  const ids = (await sget(`key/${keyHash(key)}`)) || [];
+  const ids = ((await sget(`key/${keyHash(key)}`)) || []).filter(validSub);
   const rows = (await Promise.all(ids.map((id) => sget(`sub/${id}`)))).filter((r) => r && r.stripeSub && ['ACTIVE', 'SUSPENDED'].includes(r.status));
   if (!rows.length) throw new HttpError(400, 'There is no active subscription for this license.');
   for (const r of rows) {
@@ -180,7 +182,7 @@ function cleanApi(u) {
   try { const x = new URL(String(u)); if (!/^https?:$/.test(x.protocol) || x.username || x.password || (x.port && !['80', '443', '8080', '8443'].includes(x.port)) || !hostOk(x.hostname)) return null; const s = x.toString(); return s.length <= 300 ? s : null; } catch { return null; }
 }
 async function proByHash(h) {
-  const ids = (await sget(`key/${h}`)) || [];
+  const ids = ((await sget(`key/${h}`)) || []).filter(validSub);
   const rows = (await Promise.all(ids.map((id) => sget(`sub/${id}`)))).filter(Boolean);
   // renewals: re-check with Stripe shortly before the paid period ends (also when the customer never opens Shieldly)
   for (const r of rows) {
